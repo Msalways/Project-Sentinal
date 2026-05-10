@@ -1,0 +1,37 @@
+{
+  "name": "project-sentinal",
+  "version": "1.0.0",
+  "description": "Project Sentinel - A comprehensive security testing framework",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "sentinel": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc -w",
+    "cli": "node dist/cli/index.js"
+  },
+  "keywords": [
+    "security",
+    "testing",
+    "vulnerability",
+    "scanner",
+    "penetration"
+  ],
+  "author": "Project Sentinel Team",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.40.0",
+    "zod": "^3.22.0",
+    "commander": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "type": "module"
+}
