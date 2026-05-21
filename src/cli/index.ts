@@ -4,92 +4,111 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { createSentinel, ScenarioParser, PlaywrightTestGenerator, ReportGenerator, HARParser, toolRegistry, agentRegistry, providerRegistry } from '../index';
+import { loadFileConfig, createConfig } from '../core/config';
 import type { SentinelConfig, ScanTarget } from '../core/types';
 
 const program = new Command();
+const fileConfig = loadFileConfig();
 
 program
   .name('sentinel')
-  .description('🛡️ Project Sentinel - AI-powered security team-in-a-box')
-  .version('2.0.0');
+  .description('AI-powered security team-in-a-box')
+  .version('2.0.0')
+  .option('-c, --config <file>', 'Config file path (default: sentinel.json)');
+
+program.hook('preAction', (thisCommand) => {
+  const configPath = thisCommand.opts().config;
+  if (configPath) Object.assign(fileConfig, loadFileConfig(configPath));
+});
 
 program
   .command('init')
-  .description('Initialize Sentinel configuration')
-  .option('-p, --provider <provider>', 'LLM provider (azure-openai, openai, openrouter, anthropic)', 'openai')
+  .description('Initialize sentinel.json config')
+  .option('-p, --provider <provider>', 'LLM provider', 'openrouter')
   .option('-m, --model <model>', 'Model ID')
   .option('-e, --endpoint <url>', 'Azure OpenAI endpoint')
-  .option('-o, --output <dir>', 'Output directory', '.')
+  .option('-t, --target <url>', 'Target URL')
+  .option('-o, --output <dir>', 'Output directory', './reports')
+  .option('-f, --format <format>', 'Report format', 'html')
   .action((opts) => {
     const config = {
       provider: opts.provider,
-      modelId: opts.model || (opts.provider === 'azure-openai' ? 'gpt-4o' : undefined),
-      azureEndpoint: opts.endpoint,
+      model: opts.model,
+      target: opts.target,
+      output: opts.output,
+      format: opts.format,
+      headless: true,
+      ci: false,
     };
+    if (opts.endpoint) config.target = opts.endpoint;
 
-    const configFile = path.join(opts.output, 'sentinel.config.json');
+    const outDir = opts.output || '.';
+    fs.mkdirSync(outDir, { recursive: true });
+    const configFile = path.join(outDir, 'sentinel.json');
     fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
-    console.log(`✅ Configuration saved to ${configFile}`);
+    console.log(`Config saved to ${configFile}`);
 
     const envVar = opts.provider === 'azure-openai' ? 'AZURE_OPENAI_API_KEY' :
       opts.provider === 'openrouter' ? 'OPENROUTER_API_KEY' :
       opts.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
-
-    console.log(`\nSet your API key: export ${envVar}=your-key`);
+    console.log(`Set env: export ${envVar}=your-key`);
   });
 
 program
   .command('learn')
-  .description('Record workflows and generate tests + scenario manifest')
-  .argument('<target>', 'Target URL to learn')
-  .option('-o, --output <dir>', 'Output directory', './sentinel-project')
+  .description('Record workflows and generate tests')
+  .argument('[target]', 'Target URL (from config if omitted)')
+  .option('-o, --output <dir>', 'Output directory')
   .action(async (target, opts) => {
-    console.log(`🎯 Learning mode: ${target}`);
-    console.log(`📁 Output: ${opts.output}\n`);
+    const t = target || (fileConfig.target || undefined);
+    if (!t) { console.error('Provide target or set "target" in sentinel.json'); process.exit(1); }
 
+    console.log(`Learning: ${t}`);
     const sentinel = createSentinel();
-
     try {
-      const result = await sentinel.learn(target, opts.output);
-      console.log('\n✅ Learning complete!');
-      console.log(`  HAR file: ${result.harPath}`);
-      console.log(`  Tests: ${result.testsDir}/`);
-      console.log(`  Manifest: ${result.manifestPath}`);
-      console.log('\nNext: Run "sentinel scan --project ./sentinel-project" to test');
+      const result = await sentinel.learn(t, opts.output || fileConfig.output || './sentinel-project');
+      console.log(`HAR: ${result.harPath}`);
+      console.log(`Tests: ${result.testsDir}/`);
+      console.log(`Manifest: ${result.manifestPath}`);
     } catch (error) {
-      console.error('❌ Learning failed:', error instanceof Error ? error.message : error);
+      console.error('Failed:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
 
 program
   .command('scan')
-  .description('Run full security assessment')
+  .description('Run security assessment')
   .option('-t, --target <url>', 'Target URL')
-  .option('-f, --har <file>', 'HAR file to analyze')
-  .option('-p, --project <dir>', 'Project directory (from learn)')
-  .option('-s, --scenario <file>', 'Scenario manifest file')
-  .option('--provider <provider>', 'LLM provider', 'openai')
+  .option('-f, --har <file>', 'HAR file')
+  .option('-p, --project <dir>', 'Project directory')
+  .option('-s, --scenario <file>', 'Scenario manifest')
+  .option('-o, --output <dir>', 'Output directory')
+  .option('--format <format>', 'Report format')
+  .option('--provider <provider>', 'LLM provider')
   .option('--model <model>', 'Model ID')
-  .option('--endpoint <url>', 'Azure OpenAI endpoint')
-  .option('-o, --output <dir>', 'Output directory', '.')
-  .option('--format <format>', 'Report format (html, json, markdown)', 'html')
-  .option('--headless', 'Run browser in headless mode', true)
-  .option('--ci', 'CI/CD mode (exit code 1 on critical vulns)', false)
+  .option('--ci', 'CI/CD mode')
   .action(async (opts) => {
-    const config: Partial<SentinelConfig> = {
-      provider: opts.provider as SentinelConfig['provider'],
-      modelId: opts.model,
-      azureEndpoint: opts.endpoint,
-      headless: opts.headless,
-    };
+    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.AZURE_OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+    const provider = (opts.provider || fileConfig.provider || 'openai') as SentinelConfig['provider'];
+
+    const config = createConfig({
+      apiKey,
+      provider,
+      modelId: opts.model || fileConfig.model,
+      headless: fileConfig.headless ?? true,
+      outputFormat: (opts.format || fileConfig.format || 'html') as 'html',
+      outputDir: opts.output || fileConfig.output || '.',
+      scopeManifest: opts.scenario || fileConfig.scenario,
+    });
 
     const sentinel = createSentinel(config);
     const target: ScanTarget = {};
 
-    if (opts.project) {
-      const harPath = path.join(opts.project, 'session.har');
-      const scenarioPath = path.join(opts.project, 'sentinel.yaml');
+    if (opts.project || (fileConfig.project && fileConfig.project !== '')) {
+      const projDir = opts.project || fileConfig.project!;
+      const harPath = path.join(projDir, 'session.har');
+      const scenarioPath = path.join(projDir, 'sentinel.yaml');
       if (fs.existsSync(harPath)) target.harPath = harPath;
       if (fs.existsSync(scenarioPath)) config.scopeManifest = scenarioPath;
       if (fs.existsSync(harPath)) {
@@ -102,190 +121,146 @@ program
       }
     }
 
-    if (opts.target) target.url = opts.target;
-    if (opts.har) target.harPath = opts.har;
-    if (opts.scenario) config.scopeManifest = opts.scenario;
+    target.url = opts.target || (fileConfig.target || undefined);
+    target.harPath = opts.har || (fileConfig.har || undefined);
 
     if (!target.url && !target.harPath && !target.harContent) {
-      console.error('❌ Provide --target, --har, or --project');
+      console.error('Set "target" or "har" in sentinel.json, or use --target/--har');
+      console.error('Example: {"target": "https://your-app.com", "har": "session.har"}');
       process.exit(1);
     }
 
-    console.log(`🛡️  Starting security scan...`);
-    console.log(`   Target: ${target.url || 'HAR analysis'}`);
-    console.log(`   Provider: ${config.provider}`);
-    console.log(`   Model: ${config.modelId || 'default'}\n`);
+    if (!apiKey && provider !== 'mock') {
+      const envVar = provider === 'openrouter' ? 'OPENROUTER_API_KEY' :
+        provider === 'azure-openai' ? 'AZURE_OPENAI_API_KEY' :
+        provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+      console.error(`No API key. Set ${envVar}`);
+      process.exit(1);
+    }
+
+    console.log(`Scanning: ${target.url || 'HAR only'}`);
+    console.log(`Provider: ${provider} | Model: ${config.modelId}`);
 
     try {
       const result = await sentinel.scan(target);
-
-      console.log('\n📊 Results:');
-      console.log(`   Risk Score: ${result.riskScore}/100 (${result.riskLevel.toUpperCase()})`);
-      console.log(`   Findings: ${result.findings.length}`);
-      console.log(`   Critical: ${result.findings.filter((f) => f.severity === 'critical').length}`);
-      console.log(`   High: ${result.findings.filter((f) => f.severity === 'high').length}`);
-      console.log(`   Medium: ${result.findings.filter((f) => f.severity === 'medium').length}`);
-      console.log(`   Low: ${result.findings.filter((f) => f.severity === 'low').length}`);
-
-      if (result.findings.length > 0) {
-        console.log('\n🔍 Top Findings:');
-        for (const finding of result.findings.slice(0, 5)) {
-          console.log(`   [${finding.severity.toUpperCase()}] ${finding.title}`);
-          console.log(`     Location: ${finding.location}`);
-        }
+      console.log(`Risk: ${result.riskScore}/100 (${result.riskLevel.toUpperCase()})`);
+      console.log(`Findings: ${result.findings.length}`);
+      for (const f of result.findings.slice(0, 5)) {
+        console.log(`  [${f.severity.toUpperCase()}] ${f.title}`);
       }
+      const reportPath = sentinel.generateReport(result, config.outputDir, config.outputFormat);
+      console.log(`Report: ${reportPath}`);
 
-      const reportPath = sentinel.generateReport(result, opts.output, opts.format as 'html' | 'json' | 'markdown');
-      console.log(`\n📄 Report saved: ${reportPath}`);
-
-      if (opts.ci && result.riskLevel === 'critical') {
-        console.log('\n❌ CI/CD gate: Critical vulnerabilities found');
+      if ((opts.ci || fileConfig.ci) && result.riskLevel === 'critical') {
+        console.log('CI gate: critical vulns found');
         process.exit(1);
       }
     } catch (error) {
-      console.error('❌ Scan failed:', error instanceof Error ? error.message : error);
+      console.error('Scan failed:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
 
 program
   .command('demo')
-  .description('Run demo with mock data (no API key needed)')
-  .option('-o, --output <dir>', 'Output directory', '.')
-  .option('--format <format>', 'Report format (html, json, markdown)', 'html')
+  .description('Run demo (no API key)')
+  .option('-o, --output <dir>', 'Output directory')
+  .option('--format <format>', 'Report format')
   .action(async (opts) => {
-    console.log('🛡️  Project Sentinel - Demo Mode\n');
-
     const sentinel = createSentinel({ provider: 'mock', apiKey: 'mock' });
     const result = await sentinel.demo();
-
-    console.log('📊 Demo Results:');
-    console.log(`   Risk Score: ${result.riskScore}/100 (${result.riskLevel.toUpperCase()})`);
-    console.log(`   Findings: ${result.findings.length}`);
-    console.log(`   Agents Used: ${result.metadata.agentsUsed.join(', ')}`);
-
-    if (result.findings.length > 0) {
-      console.log('\n🔍 Findings:');
-      for (const finding of result.findings) {
-        console.log(`   [${finding.severity.toUpperCase()}] ${finding.title}`);
-      }
-    }
-
-    const reportPath = sentinel.generateReport(result, opts.output, opts.format as 'html' | 'json' | 'markdown');
-    console.log(`\n📄 Report saved: ${reportPath}`);
+    console.log(`Risk: ${result.riskScore}/100 (${result.riskLevel.toUpperCase()})`);
+    console.log(`Findings: ${result.findings.length}`);
+    for (const f of result.findings) console.log(`  [${f.severity.toUpperCase()}] ${f.title}`);
+    const reportPath = sentinel.generateReport(result, opts.output || (fileConfig.output || '.'), (opts.format || fileConfig.format || 'html') as 'html');
+    console.log(`Report: ${reportPath}`);
   });
 
 program
   .command('test')
-  .description('Generate Playwright tests from scenario manifest')
-  .argument('<target>', 'Target URL')
-  .option('-m, --manifest <file>', 'Scenario manifest file')
-  .option('-o, --output <dir>', 'Output directory', './tests')
+  .description('Generate Playwright tests')
+  .argument('[target]', 'Target URL')
+  .option('-m, --manifest <file>', 'Scenario manifest')
+  .option('-o, --output <dir>', 'Output directory')
   .action((target, opts) => {
-    let manifest;
-    if (opts.manifest) {
-      manifest = ScenarioParser.fromFile(opts.manifest);
-    } else {
-      console.error('❌ Provide --manifest with scenario file');
-      process.exit(1);
-    }
+    const t = target || (fileConfig.target || undefined);
+    const manifestPath = opts.manifest || (fileConfig.scenario || undefined);
+    if (!manifestPath) { console.error('Set "scenario" in sentinel.json or use --manifest'); process.exit(1); }
 
-    const generator = new PlaywrightTestGenerator(target);
-    const files = generator.generateFromManifest(manifest, opts.output);
-
-    console.log('✅ Generated Playwright tests:');
-    for (const file of files) console.log(`   ${file}`);
+    const generator = new PlaywrightTestGenerator(t || 'http://localhost');
+    const files = generator.generateFromManifest(ScenarioParser.fromFile(manifestPath), opts.output || './tests');
+    console.log('Generated:');
+    for (const f of files) console.log(`  ${f}`);
   });
 
 program
   .command('report')
-  .description('Generate report from JSON results')
-  .argument('<input>', 'JSON results file')
-  .option('-o, --output <dir>', 'Output directory', '.')
-  .option('--format <format>', 'Report format (html, json, markdown)', 'html')
+  .description('Generate report from JSON')
+  .argument('[input]', 'JSON results file')
+  .option('-o, --output <dir>', 'Output directory')
+  .option('--format <format>', 'Report format')
   .action((input, opts) => {
-    const content = fs.readFileSync(input, 'utf-8');
-    const result = JSON.parse(content);
+    const file = input || path.join((fileConfig.output || '.'), 'scan-result.json');
+    if (!fs.existsSync(file)) { console.error(`Not found: ${file}`); process.exit(1); }
+    const result = JSON.parse(fs.readFileSync(file, 'utf-8'));
     const generator = new ReportGenerator(result);
-    const reportPath = generator.save(opts.output, opts.format as 'html' | 'json' | 'markdown');
-    console.log(`📄 Report saved: ${reportPath}`);
+    const reportPath = generator.save(opts.output || fileConfig.output || '.', (opts.format || fileConfig.format || 'html') as 'html');
+    console.log(`Report: ${reportPath}`);
   });
 
 program
   .command('har')
-  .description('Analyze a HAR file')
-  .argument('<file>', 'HAR file path')
-  .option('-f, --format <format>', 'Output format (json, text)', 'text')
-  .action((file, opts) => {
-    const parser = HARParser.fromFile(file);
-
-    if (opts.format === 'json') {
-      const analysis = {
-        urls: parser.getUniqueUrls(),
-        endpoints: parser.getEndpoints(),
-        authEndpoints: parser.getAuthEndpoints(),
-        sensitiveData: parser.getSensitiveData(),
-        graph: parser.buildDependencyGraph(),
-      };
-      console.log(JSON.stringify(analysis, null, 2));
-    } else {
-      console.log(`📊 HAR Analysis:`);
-      console.log(`   Unique URLs: ${parser.getUniqueUrls().length}`);
-      console.log(`   Endpoints: ${parser.getEndpoints().length}`);
-      console.log(`   Auth endpoints: ${parser.getAuthEndpoints().filter((a) => a.hasAuth).length}`);
-      console.log(`   Unauthenticated: ${parser.getAuthEndpoints().filter((a) => !a.hasAuth).length}`);
-      console.log(`   Sensitive data: ${parser.getSensitiveData().length}`);
-
-      const sensitive = parser.getSensitiveData();
-      if (sensitive.length > 0) {
-        console.log('\n⚠️  Sensitive Data Found:');
-        for (const s of sensitive) {
-          console.log(`   [${s.type}] ${s.url} - ${s.value.slice(0, 50)}...`);
-        }
-      }
+  .description('Analyze HAR file')
+  .argument('[file]', 'HAR file path')
+  .action((file) => {
+    const f = file || (fileConfig.har || undefined);
+    if (!f) { console.error('Set "har" in sentinel.json or provide file path'); process.exit(1); }
+    const parser = HARParser.fromFile(f);
+    console.log(`URLs: ${parser.getUniqueUrls().length}`);
+    console.log(`Endpoints: ${parser.getEndpoints().length}`);
+    console.log(`Auth: ${parser.getAuthEndpoints().filter((a) => a.hasAuth).length}`);
+    console.log(`No auth: ${parser.getAuthEndpoints().filter((a) => !a.hasAuth).length}`);
+    console.log(`Sensitive: ${parser.getSensitiveData().length}`);
+    for (const s of parser.getSensitiveData()) {
+      console.log(`  [${s.type}] ${s.url}`);
     }
   });
 
 program
   .command('tools')
-  .description('List available security tools')
+  .description('List security tools')
   .option('-c, --category <category>', 'Filter by category')
   .action((opts) => {
     if (opts.category) {
       const tools = toolRegistry.getByCategory(opts.category);
-      console.log(`\n🔧 Tools in category "${opts.category}":`);
-      for (const tool of tools) console.log(`   - ${tool.name}: ${tool.description}`);
+      console.log(`Tools in "${opts.category}":`);
+      for (const tool of tools) console.log(`  - ${tool.name}: ${tool.description}`);
     } else {
-      console.log('\n🔧 Available Security Tools:');
       const byCategory = toolRegistry.listByCategory();
       for (const [category, names] of Object.entries(byCategory)) {
-        console.log(`\n  ${category}:`);
-        for (const name of names) console.log(`    - ${name}`);
+        console.log(`\n${category}:`);
+        for (const name of names) console.log(`  - ${name}`);
       }
     }
   });
 
 program
   .command('agents')
-  .description('List available security agents')
+  .description('List AI agents')
   .action(() => {
-    console.log('\n🤖 Available Security Agents:');
     for (const agent of agentRegistry.getAll()) {
-      console.log(`\n  ${agent.name}`);
-      console.log(`    Description: ${agent.description}`);
-      console.log(`    Tools: ${agent.requiredTools.join(', ')}`);
-      console.log(`    Tags: ${agent.tags.join(', ')}`);
+      console.log(`\n${agent.name}`);
+      console.log(`  ${agent.description}`);
+      console.log(`  Tools: ${agent.requiredTools.join(', ')}`);
     }
   });
 
 program
   .command('providers')
-  .description('List available LLM providers')
+  .description('List LLM providers')
   .action(() => {
-    console.log('\n🧠 Available LLM Providers:');
-    for (const provider of providerRegistry.listAll()) {
-      console.log(`\n  ${provider.name} (${provider.label})`);
-      console.log(`    Required env: ${provider.envVars.join(', ')}`);
+    for (const p of providerRegistry.listAll()) {
+      console.log(`${p.name} (${p.label}) — env: ${p.envVars.join(', ')}`);
     }
   });
 

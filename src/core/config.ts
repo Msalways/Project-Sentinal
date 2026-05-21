@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import type { LLMProviderName, SentinelConfig, AgentName } from './types';
 
 const DEFAULT_MODEL_IDS: Record<LLMProviderName, string> = {
@@ -9,53 +11,23 @@ const DEFAULT_MODEL_IDS: Record<LLMProviderName, string> = {
 };
 
 const DEFAULT_AGENTS: SentinelConfig['agents'] = {
-  agents: [
-    {
-      name: 'recon',
-      description: 'Reconnaissance agent for surface mapping and information gathering',
-      systemPrompt: 'You are a security reconnaissance specialist. Map the attack surface, enumerate services, identify technologies, and discover entry points.',
-      tools: ['http-request', 'dns-lookup', 'tech-detect', 'subdomain-enum'],
-      maxSteps: 15,
-    },
-    {
-      name: 'web',
-      description: 'Web application security testing agent',
-      systemPrompt: 'You are a web security testing specialist. Test for XSS, SQLi, CSRF, SSRF, authentication bypass, and other web vulnerabilities using browser automation.',
-      tools: ['navigate', 'click', 'type', 'extract', 'evaluate', 'screenshot'],
-      maxSteps: 20,
-    },
-    {
-      name: 'code',
-      description: 'Static code analysis agent for vulnerability discovery',
-      systemPrompt: 'You are a static analysis specialist. Scan source code for security vulnerabilities including injection flaws, insecure crypto, hardcoded secrets, and unsafe deserialization.',
-      tools: ['file-read', 'pattern-match', 'dataflow-trace', 'sast-scan'],
-      maxSteps: 15,
-    },
-    {
-      name: 'network',
-      description: 'Network and infrastructure security testing agent',
-      systemPrompt: 'You are a network security specialist. Scan for open ports, service versions, misconfigurations, and infrastructure-level vulnerabilities.',
-      tools: ['port-scan', 'service-detect', 'ssl-check', 'header-analyze'],
-      maxSteps: 15,
-    },
-    {
-      name: 'exploit',
-      description: 'Exploit verification agent — validates findings with proof-of-concept',
-      systemPrompt: 'You are an exploit verification specialist. Take vulnerability findings and create safe proof-of-concept tests to confirm they are real, not false positives.',
-      tools: ['http-request', 'navigate', 'inject-payload', 'extract'],
-      maxSteps: 10,
-    },
-    {
-      name: 'report',
-      description: 'Report generation agent — correlates findings and generates security report',
-      systemPrompt: 'You are a security reporting specialist. Correlate findings from all agents, deduplicate, prioritize by risk, and generate a comprehensive security report with remediation guidance.',
-      tools: ['correlate', 'score', 'generate-report'],
-      maxSteps: 5,
-    },
-  ],
-  terminationPrompt: 'All security testing is complete. Summarize findings and generate the final report.',
+  agents: [],
+  terminationPrompt: '',
   maxRounds: 3,
 };
+
+export interface SentinelFileConfig {
+  provider?: LLMProviderName;
+  model?: string;
+  target?: string;
+  har?: string;
+  project?: string;
+  scenario?: string;
+  output?: string;
+  format?: 'html' | 'json' | 'markdown';
+  headless?: boolean;
+  ci?: boolean;
+}
 
 function resolveApiKey(provider: LLMProviderName): string {
   const envKeys: Record<LLMProviderName, string> = {
@@ -68,14 +40,29 @@ function resolveApiKey(provider: LLMProviderName): string {
   return envKeys[provider];
 }
 
-function resolveModelId(provider: LLMProviderName, explicit?: string): string {
-  return explicit || DEFAULT_MODEL_IDS[provider];
+export function loadFileConfig(configPath?: string): SentinelFileConfig {
+  const searchPaths = [
+    configPath,
+    path.join(process.cwd(), 'sentinel.json'),
+    path.join(process.cwd(), 'sentinel.yaml'),
+    path.join(process.cwd(), '.sentinel.json'),
+  ].filter(Boolean) as string[];
+
+  for (const p of searchPaths) {
+    if (p && fs.existsSync(p)) {
+      try {
+        const content = fs.readFileSync(p, 'utf-8');
+        if (p.endsWith('.json')) return JSON.parse(content);
+      } catch { /* skip invalid files */ }
+    }
+  }
+  return {};
 }
 
-export function createConfig(overrides: Partial<SentinelConfig> = {}): SentinelConfig {
-  const provider = (overrides.provider || process.env.SENTINEL_PROVIDER || 'openai') as LLMProviderName;
+export function createConfig(overrides: Partial<SentinelConfig> = {}, fileConfig: SentinelFileConfig = {}): SentinelConfig {
+  const provider = (overrides.provider || fileConfig.provider || process.env.SENTINEL_PROVIDER || 'openai') as LLMProviderName;
   const apiKey = overrides.apiKey || resolveApiKey(provider);
-  const modelId = resolveModelId(provider, overrides.modelId);
+  const modelId = overrides.modelId || fileConfig.model || DEFAULT_MODEL_IDS[provider];
 
   return {
     provider,
@@ -83,12 +70,12 @@ export function createConfig(overrides: Partial<SentinelConfig> = {}): SentinelC
     modelId,
     azureEndpoint: overrides.azureEndpoint || process.env.AZURE_OPENAI_ENDPOINT,
     azureApiVersion: overrides.azureApiVersion || process.env.AZURE_OPENAI_API_VERSION || '2024-02-01',
-    agents: overrides.agents || DEFAULT_AGENTS,
-    headless: overrides.headless ?? true,
+    agents: DEFAULT_AGENTS,
+    headless: overrides.headless ?? fileConfig.headless ?? true,
     timeout: overrides.timeout || 60000,
-    scopeManifest: overrides.scopeManifest,
-    outputFormat: overrides.outputFormat || 'html',
-    outputDir: overrides.outputDir || '.',
+    scopeManifest: overrides.scopeManifest || fileConfig.scenario,
+    outputFormat: overrides.outputFormat || fileConfig.format || 'html',
+    outputDir: overrides.outputDir || fileConfig.output || '.',
   };
 }
 

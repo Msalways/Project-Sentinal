@@ -123,3 +123,17 @@ providerRegistry.register({
     });
   },
 });
+
+// ── Mock (for testing without API key) ──
+
+providerRegistry.register({
+  name: 'mock',
+  label: 'Mock',
+  envVars: [],
+  create: () => {
+    const { FakeListChatModel } = require('@langchain/core/utils/testing');
+    return new FakeListChatModel({
+      responses: ['No vulnerabilities found during mock scan.'],
+    });
+  },
+});

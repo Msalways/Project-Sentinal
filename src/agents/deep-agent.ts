@@ -23,7 +23,7 @@ export function createSentinelAgent(config: SentinelAgentConfig): ReturnType<typ
         description: entry!.description,
         systemPrompt: entry!.systemPrompt,
         tools,
-        ...(entry!.model ? { model: entry!.model } : {}),
+        model: config.model,
       };
     });
 
