@@ -1,56 +1,77 @@
-// ── Project Sentinel Main Entry Point ──
-// Main entry point for the Project Sentinel security testing framework
+import type { SentinelConfig, ScanTarget } from './core/types';
+import { createConfig } from './core/config';
+import { Pipeline } from './pipeline';
+import { ReportGenerator } from './pipeline/report-generator';
+import { Viewport } from './browser/viewport';
+import { HARParser } from './tools/har-parser';
+import { ScenarioParser } from './tools/scenario-parser';
+import { PlaywrightTestGenerator } from './tools/test-generator';
+import { toolRegistry } from './tools/tool-registry';
+import { agentRegistry } from './agents/agent-registry';
+import { providerRegistry } from './providers/provider-registry';
+import { createSentinelAgent, parseFindingsFromOutput } from './agents/deep-agent';
 
-import { LLMOrchestrator } from './orchestration/llm-orchestrator.js';
-import { WebSecurityTester } from './security/web/index.js';
-import { CodeAnalyzer } from './security/code/index.js';
-import { NetworkScanner } from './security/network/index.js';
-import { ReportGenerator } from './security/reporting/index.js';
+export interface SentinelOptions {
+  provider?: SentinelConfig['provider'];
+  apiKey?: string;
+  modelId?: string;
+  azureEndpoint?: string;
+  azureApiVersion?: string;
+  headless?: boolean;
+  timeout?: number;
+}
 
 export class ProjectSentinel {
-  private config: any;
-  
-  constructor(config: any) {
-    this.config = config;
+  private config: SentinelConfig;
+
+  constructor(options: SentinelOptions = {}) {
+    this.config = createConfig(options);
   }
-  
-  /**
-   * Run security test using LLM orchestration
-   */
-  async runSecurityTest(prompt: string): Promise<SecurityTestResult> {
-    // Initialize LLM orchestrator
-    const llmOrchestrator = new LLMOrchestrator();
-    
-    // Generate security testing plan using LLM
-    const testPlan = await llmOrchestrator.orchestrateSecurityTesting(prompt);
-    
-    // Execute the security testing workflow
-    const result = await this.executeSecurityWorkflow(testPlan, prompt);
-    
-    return result;
+
+  async scan(target: ScanTarget): Promise<ReturnType<typeof Pipeline.prototype.run>> {
+    const pipeline = new Pipeline(this.config);
+    return pipeline.run(target);
   }
-  
-  /**
-   * Execute security testing workflow
-   */
-  private async executeSecurityWorkflow(testPlan: any, prompt: string): Promise<SecurityTestResult> {
-    // This would execute the security testing workflow
-    // based on the LLM-generated plan
-    
-    const result: SecurityTestResult = {
-      success: true,
-      findings: [],
-      duration: 0,
-      completedAt: new Date()
-    };
-    
-    return result;
+
+  async learn(target: string, outputDir: string): Promise<{ harPath: string; testsDir: string; manifestPath: string }> {
+    const pipeline = new Pipeline(this.config);
+    return pipeline.learn(target, outputDir);
+  }
+
+  async demo(): Promise<ReturnType<typeof Pipeline.prototype.demo>> {
+    const pipeline = new Pipeline(this.config);
+    return pipeline.demo();
+  }
+
+  generateReport(result: Awaited<ReturnType<typeof Pipeline.prototype.run>>, outputDir: string, format: 'html' | 'json' | 'markdown' = 'html'): string {
+    const generator = new ReportGenerator(result);
+    return generator.save(outputDir, format);
+  }
+
+  generateTests(target: string, manifestPath: string, outputDir: string): string[] {
+    const manifest = ScenarioParser.fromFile(manifestPath);
+    const generator = new PlaywrightTestGenerator(target);
+    return generator.generateFromManifest(manifest, outputDir);
   }
 }
 
-export interface SecurityTestResult {
-  success: boolean;
-  findings: any[];
-  duration: number;
-  completedAt: Date;
+export function createSentinel(options: SentinelOptions = {}): ProjectSentinel {
+  return new ProjectSentinel(options);
 }
+
+export { createConfig };
+export { Pipeline, ReportGenerator, Viewport, HARParser, ScenarioParser, PlaywrightTestGenerator };
+export { toolRegistry, agentRegistry, providerRegistry };
+export { createSentinelAgent, parseFindingsFromOutput };
+export type {
+  Severity, AgentName, LLMProviderName, TestStatus, PipelineStatus,
+  Finding, TestResult, ScanTarget, AgentConfig, TeamConfig,
+  SentinelConfig, PipelineResult,
+  HARRequest, HARResponse, HAREntry, HARLog, HARFile,
+  DependencyNode, DependencyEdge, DependencyGraph,
+} from './core/types';
+export type { Message, ToolDefinition, ToolCall, LLMResponse, LLMProvider } from './core/llm';
+export { ok, err, asyncResult, type Result } from './core/result';
+export type { ToolRegistryEntry, ToolRegistry } from './tools/tool-registry';
+export type { AgentRegistryEntry, AgentRegistry } from './agents/agent-registry';
+export type { ProviderFactory, ProviderRegistry } from './providers/provider-registry';
