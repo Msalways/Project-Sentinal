@@ -287,12 +287,6 @@ project-sentinal/
 
 ---
 
-## Team
-
-| Name | Role |
-|------|------|
-| Your Name | Lead Developer |
-
 ## License
 
 MIT
