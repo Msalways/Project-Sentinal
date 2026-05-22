@@ -4,7 +4,7 @@ export interface AgentRegistryEntry {
   name: string;
   description: string;
   systemPrompt: string;
-  requiredTools: string[];
+  suggestedTools: string[];
   model?: BaseChatModel;
   maxSteps?: number;
   tags: string[];
@@ -62,7 +62,7 @@ Report findings in this format:
    Location: [URL or file path]
    Evidence: [specific proof]
    Remediation: [how to fix it]`,
-  requiredTools: ['http_request', 'tech_detect', 'har_analyze', 'subdomain_enum', 'dir_bruteforce', 'secrets_scan'],
+  suggestedTools: ['http_request', 'tech_detect', 'har_analyze', 'subdomain_enum', 'dir_bruteforce', 'secrets_scan'],
   tags: ['recon', 'surface-mapping'],
 });
 
@@ -87,7 +87,7 @@ Report findings in this format:
    Location: [URL or parameter]
    Evidence: [specific proof]
    Remediation: [how to fix it]`,
-  requiredTools: ['http_request', 'sql_inject', 'xss_inject', 'cors_audit', 'rate_limit_test', 'api_fuzz', 'header_analyze'],
+  suggestedTools: ['http_request', 'sql_inject', 'xss_inject', 'cors_audit', 'rate_limit_test', 'api_fuzz', 'header_analyze'],
   tags: ['web', 'browser', 'injection'],
 });
 
@@ -111,7 +111,7 @@ Report findings in this format:
    Location: [file:line]
    Evidence: [code snippet]
    Remediation: [how to fix it]`,
-  requiredTools: ['pattern_match', 'secrets_scan', 'entry_point_detect', 'source_sink_scan', 'reachability_analyze', 'finding_verify'],
+  suggestedTools: ['pattern_match', 'secrets_scan', 'entry_point_detect', 'source_sink_scan', 'reachability_analyze', 'finding_verify'],
   tags: ['code', 'sast', 'static-analysis'],
 });
 
@@ -134,7 +134,7 @@ Report findings in this format:
    Location: [host:port or URL]
    Evidence: [specific proof]
    Remediation: [how to fix it]`,
-  requiredTools: ['port_scan', 'header_analyze', 'ssl_check', 'iam_policy_audit', 'k8s_manifest_audit', 'tfstate_audit'],
+  suggestedTools: ['port_scan', 'header_analyze', 'ssl_check', 'iam_policy_audit', 'k8s_manifest_audit', 'tfstate_audit'],
   tags: ['network', 'infrastructure', 'headers', 'cloud'],
 });
 
@@ -157,7 +157,7 @@ Report findings in this format:
    Location: [URL or endpoint]
    Evidence: [specific proof]
    Remediation: [how to fix it]`,
-  requiredTools: ['jwt_parse', 'jwt_forge', 'oauth_audit', 'exploit_auth_bypass', 'exploit_authz', 'http_request'],
+  suggestedTools: ['jwt_parse', 'jwt_forge', 'oauth_audit', 'exploit_auth_bypass', 'exploit_authz', 'http_request'],
   tags: ['auth', 'jwt', 'oauth', 'authorization'],
 });
 
@@ -180,7 +180,7 @@ Report findings in this format:
    Location: [API endpoint]
    Evidence: [specific proof]
    Remediation: [how to fix it]`,
-  requiredTools: ['graphql_introspect', 'api_fuzz', 'cors_audit', 'rate_limit_test', 'dependency_enrich', 'cve_lookup', 'http_request'],
+  suggestedTools: ['graphql_introspect', 'api_fuzz', 'cors_audit', 'rate_limit_test', 'dependency_enrich', 'cve_lookup', 'http_request'],
   tags: ['api', 'graphql', 'fuzzing', 'dependencies'],
 });
 
@@ -204,6 +204,6 @@ Report findings in this format:
    Location: [URL or file path]
    Evidence: [PoC result]
    Remediation: [how to fix it]`,
-  requiredTools: ['http_request', 'sql_inject', 'xss_inject', 'exploit_auth_bypass', 'exploit_authz', 'jwt_forge'],
+  suggestedTools: ['http_request', 'sql_inject', 'xss_inject', 'exploit_auth_bypass', 'exploit_authz', 'jwt_forge'],
   tags: ['exploit', 'validation', 'poc'],
 });

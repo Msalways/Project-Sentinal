@@ -1,10 +1,15 @@
 import type { Finding, Severity, TestResult } from '../core/types';
+import { enrichFindingsWithConfidence } from './confidence';
+import { enrichFindingsWithOWASP } from './owasp-mapper';
 
 export function calculateRiskScore(findings: Finding[]): number {
   if (findings.length === 0) return 0;
   const weights: Record<Severity, number> = { critical: 25, high: 15, medium: 8, low: 3, info: 1 };
   let totalWeight = 0;
-  for (const finding of findings) totalWeight += weights[finding.severity] || 0;
+  for (const finding of findings) {
+    const confidenceMultiplier = (finding.confidence || 50) / 100;
+    totalWeight += (weights[finding.severity] || 0) * confidenceMultiplier;
+  }
   return Math.min(100, totalWeight);
 }
 
@@ -30,10 +35,12 @@ export function correlateFindings(findings: Finding[], testResults: TestResult[]
   testResults: TestResult[];
   summary: string;
 } {
-  const uniqueFindings = deduplicateFindings(findings);
+  const enriched = enrichFindingsWithConfidence(enrichFindingsWithOWASP(findings));
+  const uniqueFindings = deduplicateFindings(enriched);
   const score = calculateRiskScore(uniqueFindings);
   const level = riskLevelFromScore(score);
-  const summary = `Security assessment complete. ${uniqueFindings.length} vulnerabilities found (${uniqueFindings.filter((f) => f.severity === 'critical').length} critical, ${uniqueFindings.filter((f) => f.severity === 'high').length} high). Risk level: ${level}. Score: ${score}/100.`;
+  const confirmed = uniqueFindings.filter((f) => f.confidence >= 75).length;
+  const summary = `Security assessment complete. ${uniqueFindings.length} vulnerabilities found (${uniqueFindings.filter((f) => f.severity === 'critical').length} critical, ${uniqueFindings.filter((f) => f.severity === 'high').length} high). ${confirmed} confirmed. Risk level: ${level}. Score: ${score}/100.`;
 
   return {
     findings: uniqueFindings.sort((a, b) => {

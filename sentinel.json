@@ -1,0 +1,12 @@
+{
+  "provider": "openrouter",
+  "model": "openai/gpt-4o",
+  "target": "",
+  "har": "",
+  "project": "",
+  "scenario": "",
+  "output": "./reports",
+  "format": "html",
+  "headless": true,
+  "ci": false
+}

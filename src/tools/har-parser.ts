@@ -100,10 +100,12 @@ export class HARParser {
 
   private inferService(url: URL): string {
     const path = url.pathname;
-    if (path.includes('/api/')) {
-      const parts = path.split('/').filter(Boolean);
-      const apiIndex = parts.indexOf('api');
-      return apiIndex >= 0 && parts.length > apiIndex + 1 ? parts[apiIndex + 1] : 'api';
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length > 0) {
+      const firstSegment = parts[0];
+      if (!firstSegment.match(/^_[a-z]/i) && !firstSegment.includes('.')) {
+        return firstSegment;
+      }
     }
     return url.hostname;
   }

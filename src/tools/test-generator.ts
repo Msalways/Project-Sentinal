@@ -51,7 +51,33 @@ export class PlaywrightTestGenerator {
     if (lower.includes('browse') || lower.includes('product')) return `    await page.goto('${this.target}/products');\n    await expect(page.locator('.product-list')).toBeVisible();`;
     if (lower.includes('checkout') || lower.includes('payment')) return `    await page.goto('${this.target}/checkout');\n    await page.fill('#card-number', '4111111111111111');\n    await page.fill('#expiry', '12/30');\n    await page.fill('#cvv', '123');\n    await page.click('[type="submit"]');\n    await expect(page).toHaveURL(/order-confirmation/);`;
     if (lower.includes('admin')) return `    await page.goto('${this.target}/admin');\n    await expect(page).toHaveURL(/admin/);`;
-    return `    await page.goto('${this.target}');\n    // TODO: Implement step - "${step}"`;
+
+    const urlMatch = step.match(/(?:GET|POST|PUT|DELETE|PATCH)\s+(https?:\/\/[^\s]+)/);
+    if (urlMatch) {
+      const url = urlMatch[1];
+      try {
+        const parsed = new URL(url);
+        const routePath = parsed.pathname + parsed.search;
+        if (routePath.match(/\.(css|js|woff2?|png|svg|ico|map|jpg|jpeg|gif)$/i)) return `    // Static asset: ${url}`;
+        if (url.includes('gtag') || url.includes('google-analytics') || url.includes('googletagmanager') || url.includes('doubleclick') || url.includes('clerk.openrouter')) return `    // Third-party: ${url}`;
+        if (url.includes('cdn-cgi') || url.includes('cloudflareinsights')) return `    // CDN: ${url}`;
+        if (url.includes('blob:')) return `    // Blob URL: ${url}`;
+        if (url.includes('ingest/') || url.includes('/analytics') || url.includes('/rum?')) return `    // Analytics: ${url}`;
+        if (parsed.pathname === '/' && step.startsWith('POST')) return `    // POST to root: ${url}`;
+        if (parsed.pathname === '/' && step.startsWith('GET')) return `    await page.goto('${this.target}');\n    await expect(page).toHaveTitle(/.+/);`;
+        if (parsed.pathname.match(/^\/_next\/static\//)) return `    // Next.js asset: ${url}`;
+        if (parsed.pathname.match(/^\/_next\/image/)) return `    // Next.js image: ${url}`;
+        {
+          const method = step.split(' ')[0].toLowerCase();
+          return `    const res = await page.request.${method}('${this.target}${routePath}');\n    expect(res.status()).toBeLessThan(400);`;
+        }
+        return `    await page.goto('${this.target}${routePath}');\n    await expect(page).toHaveURL(/.+/);`;
+      } catch {
+        return `    // Unparseable: ${step}`;
+      }
+    }
+
+    return `    // TODO: ${step}\n    await page.goto('${this.target}');`;
   }
 
   private generateSecurityTestCode(step: string): string {
@@ -59,9 +85,9 @@ export class PlaywrightTestGenerator {
     if (lower.includes('sql injection') || lower.includes('sqli')) return `    await page.goto('${this.target}/login');\n    await page.fill('#email', "' OR 1=1--");\n    await page.fill('#password', 'anything');\n    await page.click('[type="submit"]');\n    await expect(page).toHaveURL(/login/);\n    await expect(page.locator('.error')).toBeVisible();`;
     if (lower.includes('xss')) return `    await page.goto('${this.target}/search');\n    await page.fill('#q', '<script>alert("xss")</script>');\n    await page.click('[type="submit"]');\n    await expect(page.locator('script')).not.toBeVisible();\n    const content = await page.content();\n    expect(content).not.toContain('<script>');`;
     if (lower.includes('brute force') || lower.includes('rate limit')) return `    for (let i = 0; i < 10; i++) {\n      await page.goto('${this.target}/login');\n      await page.fill('#email', 'user@test.com');\n      await page.fill('#password', \`wrong-\${i}\`);\n      await page.click('[type="submit"]');\n    }\n    await expect(page.locator('.rate-limit, .too-many')).toBeVisible();`;
-    if (lower.includes('idor') || lower.includes('other user')) return `    await page.goto('${this.target}/api/users/1');\n    const response = await page.request.get('${this.target}/api/users/2');\n    expect(response.status()).toBe(403);`;
+    if (lower.includes('idor') || lower.includes('other user')) return `    await page.goto('${this.target}/users/1');\n    const response = await page.request.get('${this.target}/users/2');\n    expect(response.status()).toBe(403);`;
     if (lower.includes('auth bypass') || lower.includes('admin') || lower.includes('403')) return `    await page.goto('${this.target}/admin');\n    await expect(page).toHaveURL(/login|unauthorized|forbidden/);`;
-    if (lower.includes('tampered') || lower.includes('price')) return `    const response = await page.request.post('${this.target}/api/checkout', {\n      data: { items: [{ id: 1, price: 0.01 }] },\n    });\n    expect(response.status()).toBe(400);`;
+    if (lower.includes('tampered') || lower.includes('price')) return `    const response = await page.request.post('${this.target}/checkout', {\n      data: { items: [{ id: 1, price: 0.01 }] },\n    });\n    expect(response.status()).toBe(400);`;
     return `    // TODO: Implement security test - "${step}"\n    await page.goto('${this.target}');`;
   }
 

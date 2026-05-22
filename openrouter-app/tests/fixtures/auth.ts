@@ -10,7 +10,7 @@ export const testRoles = {
 export async function loginAs(page: any, role: string) {
   const credentials = testRoles[role as keyof typeof testRoles];
   if (!credentials) throw new Error(`Unknown role: ${role}`);
-  await page.goto('https://openrouter.ai//login');
+  await page.goto('https://openrouter.ai/login');
   await page.fill('#email', credentials.username || credentials.email || '');
   await page.fill('#password', credentials.password || '');
   await page.click('[type="submit"]');

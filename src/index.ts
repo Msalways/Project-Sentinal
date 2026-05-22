@@ -1,11 +1,13 @@
 import type { SentinelConfig, ScanTarget } from './core/types';
-import { createConfig } from './core/config';
+import { createConfig, loadFileConfig } from './core/config';
 import { Pipeline } from './pipeline';
 import { ReportGenerator } from './pipeline/report-generator';
 import { Viewport } from './browser/viewport';
 import { HARParser } from './tools/har-parser';
 import { ScenarioParser } from './tools/scenario-parser';
 import { PlaywrightTestGenerator } from './tools/test-generator';
+import { LLMTestGenerator } from './tools/llm-test-generator';
+import { LLMAnalyzer } from './tools/llm-analyzer';
 import { toolRegistry } from './tools/tool-registry';
 import { agentRegistry } from './agents/agent-registry';
 import { providerRegistry } from './providers/provider-registry';
@@ -23,24 +25,23 @@ export interface SentinelOptions {
 
 export class ProjectSentinel {
   private config: SentinelConfig;
+  public pipeline: Pipeline;
 
   constructor(options: SentinelOptions = {}) {
     this.config = createConfig(options);
+    this.pipeline = new Pipeline(this.config);
   }
 
   async scan(target: ScanTarget): Promise<ReturnType<typeof Pipeline.prototype.run>> {
-    const pipeline = new Pipeline(this.config);
-    return pipeline.run(target);
+    return this.pipeline.run(target);
   }
 
   async learn(target: string, outputDir: string): Promise<{ harPath: string; testsDir: string; manifestPath: string }> {
-    const pipeline = new Pipeline(this.config);
-    return pipeline.learn(target, outputDir);
+    return this.pipeline.learn(target, outputDir);
   }
 
   async demo(): Promise<ReturnType<typeof Pipeline.prototype.demo>> {
-    const pipeline = new Pipeline(this.config);
-    return pipeline.demo();
+    return this.pipeline.demo();
   }
 
   generateReport(result: Awaited<ReturnType<typeof Pipeline.prototype.run>>, outputDir: string, format: 'html' | 'json' | 'markdown' = 'html'): string {
@@ -59,8 +60,8 @@ export function createSentinel(options: SentinelOptions = {}): ProjectSentinel {
   return new ProjectSentinel(options);
 }
 
-export { createConfig };
-export { Pipeline, ReportGenerator, Viewport, HARParser, ScenarioParser, PlaywrightTestGenerator };
+export { createConfig, loadFileConfig };
+export { Pipeline, ReportGenerator, Viewport, HARParser, ScenarioParser, PlaywrightTestGenerator, LLMTestGenerator, LLMAnalyzer };
 export { toolRegistry, agentRegistry, providerRegistry };
 export { createSentinelAgent, parseFindingsFromOutput };
 export type {
@@ -69,6 +70,7 @@ export type {
   SentinelConfig, PipelineResult,
   HARRequest, HARResponse, HAREntry, HARLog, HARFile,
   DependencyNode, DependencyEdge, DependencyGraph,
+  ScanEvent, ScanEventCallback, ScanEventEmitter, ScanEventType, OWASPCategory,
 } from './core/types';
 export type { Message, ToolDefinition, ToolCall, LLMResponse, LLMProvider } from './core/llm';
 export { ok, err, asyncResult, type Result } from './core/result';

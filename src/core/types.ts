@@ -14,14 +14,28 @@ export type TestStatus = 'passed' | 'failed' | 'skipped' | 'error';
 
 export type PipelineStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+export type OWASPCategory =
+  | 'A01:2021-broken-access-control'
+  | 'A02:2021-cryptographic-failures'
+  | 'A03:2021-injection'
+  | 'A04:2021-insecure-design'
+  | 'A05:2021-security-misconfiguration'
+  | 'A06:2021-vulnerable-components'
+  | 'A07:2021-auth-failures'
+  | 'A08:2021-data-integrity'
+  | 'A09:2021-logging-failures'
+  | 'A10:2021-ssrf';
+
 export interface Finding {
   id: string;
   title: string;
   description: string;
   severity: Severity;
   category: string;
+  owaspCategory?: OWASPCategory;
   cweId?: string;
   cvssScore?: number;
+  confidence: number;
   location: string;
   evidence: string;
   remediation: string;
@@ -37,6 +51,82 @@ export interface TestResult {
   description: string;
   finding?: Finding;
   duration: number;
+  confidence: number;
+}
+
+export type ScanEventType =
+  | 'agent:start'
+  | 'agent:complete'
+  | 'agent:thinking'
+  | 'tool:start'
+  | 'tool:complete'
+  | 'finding:new'
+  | 'pipeline:status'
+  | 'pipeline:progress';
+
+export interface ScanEvent {
+  type: ScanEventType;
+  timestamp: string;
+  agent?: string;
+  tool?: string;
+  message?: string;
+  thinking?: string;
+  finding?: Finding;
+  progress?: number;
+  details?: Record<string, unknown>;
+}
+
+export type ScanEventCallback = (event: ScanEvent) => void;
+
+export class ScanEventEmitter {
+  private listeners: ScanEventCallback[] = [];
+
+  on(callback: ScanEventCallback): void {
+    this.listeners.push(callback);
+  }
+
+  emit(event: Omit<ScanEvent, 'timestamp'>): void {
+    const fullEvent: ScanEvent = { ...event, timestamp: new Date().toISOString() };
+    for (const listener of this.listeners) {
+      try {
+        listener(fullEvent);
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
+
+  agentStart(agent: string, details?: Record<string, unknown>): void {
+    this.emit({ type: 'agent:start', agent, details });
+  }
+
+  agentComplete(agent: string, details?: Record<string, unknown>): void {
+    this.emit({ type: 'agent:complete', agent, details });
+  }
+
+  agentThinking(agent: string, thinking: string): void {
+    this.emit({ type: 'agent:thinking', agent, thinking });
+  }
+
+  toolStart(tool: string, agent?: string, details?: Record<string, unknown>): void {
+    this.emit({ type: 'tool:start', tool, agent, details });
+  }
+
+  toolComplete(tool: string, agent?: string, details?: Record<string, unknown>): void {
+    this.emit({ type: 'tool:complete', tool, agent, details });
+  }
+
+  newFinding(finding: Finding): void {
+    this.emit({ type: 'finding:new', finding });
+  }
+
+  pipelineStatus(status: string, progress?: number): void {
+    this.emit({ type: 'pipeline:status', message: status, progress });
+  }
+
+  pipelineProgress(progress: number, message: string): void {
+    this.emit({ type: 'pipeline:progress', progress, message });
+  }
 }
 
 export interface ScanTarget {

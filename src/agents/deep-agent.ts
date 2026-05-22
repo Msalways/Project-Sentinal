@@ -8,16 +8,20 @@ import { agentRegistry } from '../agents/agent-registry';
 export interface SentinelAgentConfig {
   model: BaseChatModel;
   allTools: Tool[];
+  allAgents?: typeof agentRegistry.getAll extends () => infer T ? T : any[];
+  targetContext?: string;
   agentNames?: string[];
 }
 
 export function createSentinelAgent(config: SentinelAgentConfig): ReturnType<typeof createDeepAgent> {
   const agentNames = config.agentNames || agentRegistry.listNames();
+  const allAgents = config.allAgents || agentRegistry.getAll();
+
   const subagents = agentNames
     .map((name) => agentRegistry.get(name))
     .filter(Boolean)
     .map((entry) => {
-      const tools = agentRegistry.resolveTools(config.allTools, entry!.requiredTools);
+      const tools = agentRegistry.resolveTools(config.allTools, entry!.suggestedTools);
       return {
         name: entry!.name,
         description: entry!.description,
@@ -31,24 +35,35 @@ export function createSentinelAgent(config: SentinelAgentConfig): ReturnType<typ
     .map((sa) => `- ${sa.name}: ${sa.description}`)
     .join('\n');
 
+  const contextSection = config.targetContext ? `Target Context:\n${config.targetContext}\n\n` : '';
+
   return createDeepAgent({
     model: config.model,
     tools: config.allTools,
     subagents,
-    systemPrompt: `You are Project Sentinel, an AI-powered security team-in-a-box.
+    systemPrompt: `You are Project Sentinel, an autonomous AI security team lead.
 
-You coordinate a team of specialized security agents to perform comprehensive security assessments.
+${contextSection}You coordinate a team of specialized security agents to perform comprehensive security assessments.
 
-Your workflow:
-1. Analyze the target application and understand its architecture
-2. Spawn specialized subagents for each security domain
-3. Correlate findings from all agents
-4. Generate a comprehensive security report with risk scoring
+Your autonomous workflow:
+1. Analyze the target application and understand its architecture from the context provided
+2. Decide which specialized agents are relevant for this target
+3. Spawn only the agents needed — don't waste time on irrelevant ones
+4. Delegate specific tasks to each agent based on their expertise
+5. Review all findings, correlate them, and eliminate false positives
+6. Generate a comprehensive security report with risk scoring
 
-Available agents:
+Available agents (use task tool to delegate):
 ${agentList}
 
-Always use the task tool to delegate work to specialized subagents.
+Guidelines:
+- For web apps: use recon-agent, web-agent, auth-agent, exploit-agent
+- For APIs: use recon-agent, api-agent, auth-agent, exploit-agent
+- For code repos: use code-agent, secrets_scan tools
+- For infrastructure: use network-agent, cloud tools
+- Always validate findings with exploit-agent before reporting
+- Only report CONFIRMED vulnerabilities
+
 After all subagents complete their work, synthesize the findings into a final security report.`,
   });
 }
@@ -103,6 +118,7 @@ export function parseFindingsFromOutput(output: string): Finding[] {
         remediation,
         agent: 'recon' as AgentName,
         timestamp: new Date().toISOString(),
+        confidence: 50,
       });
     }
   }
