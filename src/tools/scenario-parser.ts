@@ -53,8 +53,8 @@ export class ScenarioParser {
         currentSubSection = 'test';
         currentItem.happy = [];
         currentItem.sad = [];
-      } else if (trimmed.startsWith('happy:') && currentSubSection === 'test') currentSubSection = 'happy';
-      else if (trimmed.startsWith('sad:') && currentSubSection === 'test') currentSubSection = 'sad';
+      } else if (trimmed.startsWith('happy:') && (currentSubSection === 'test' || currentSubSection === 'sad')) currentSubSection = 'happy';
+      else if (trimmed.startsWith('sad:') && (currentSubSection === 'test' || currentSubSection === 'happy')) currentSubSection = 'sad';
       else if (trimmed.startsWith('- ') && (currentSubSection === 'happy' || currentSubSection === 'sad')) {
         const value = trimmed.slice(2).replace(/['"]/g, '');
         (currentItem[currentSubSection] as string[]).push(value);

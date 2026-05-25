@@ -1,5 +1,0 @@
-{
-  "provider": "openrouter",
-  "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
-  "azureEndpoint": "https://openrouter.ai/api/v1"
-}

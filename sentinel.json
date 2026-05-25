@@ -1,12 +1,12 @@
 {
-  "provider": "openrouter",
-  "model": "openai/gpt-4o",
-  "target": "",
+  "provider": "nvidia",
+  "model": "minimaxai/minimax-m2.7",
+  "target": "https://docs.langchain.com/",
   "har": "",
   "project": "",
   "scenario": "",
-  "output": "./reports",
-  "format": "html",
-  "headless": true,
+  "output": "./sentinel-project",
+  "format": "markdown",
+  "headless": false,
   "ci": false
 }

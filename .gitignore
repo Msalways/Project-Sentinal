@@ -9,3 +9,8 @@ sentinel-demo-report-*
 .DS_Store
 coverage/
 .cache/
+
+graphify-out/
+test-output-*/
+JUDGE_TESTING.md
+
