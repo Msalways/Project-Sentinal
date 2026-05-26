@@ -182,23 +182,16 @@ Never use example.com — the target is ${opts.target}`,
 
     const { LocalRegistry } = await import('../flow/local-registry');
     const registry = new LocalRegistry(opts.target);
-    const artifacts = fs.readdirSync(path.join(opts.output));
-    for (const file of artifacts) {
-      const src = path.join(opts.output, file);
-      const dst = path.join(registry.path, file);
-      if (fs.statSync(src).isDirectory()) {
-        const children = fs.readdirSync(src);
-        fs.mkdirSync(dst, { recursive: true });
-        for (const child of children) fs.copyFileSync(path.join(src, child), path.join(dst, child));
-      } else {
-        fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.copyFileSync(src, dst);
-      }
-    }
+    const outDir = path.resolve(opts.output);
+    const testDir = path.join(outDir, 'tests');
 
-    const previous = registry.loadPrevious();
-    if (previous) {
-      const diff = registry.diff(previous);
+    const previousModel = registry.loadPrevious();
+    const currentJson = path.join(outDir, 'flow.json');
+    const currentModel = fs.existsSync(currentJson) ? JSON.parse(fs.readFileSync(currentJson, 'utf-8')) : null;
+
+    if (previousModel && currentModel) {
+      const diff = registry.diff(currentModel);
+
       if (diff.hasChanges) {
         log.info('Changes from previous scan:');
         for (const p of diff.addedPages) log.dim(`  + new page: ${p}`);
@@ -209,8 +202,53 @@ Never use example.com — the target is ${opts.target}`,
         }
         for (const a of diff.addedApis) log.dim(`  + new API: ${a}`);
         for (const f of diff.impactedFlows) log.dim(`  ↳ impacted: ${f}`);
+
+        const changedPaths = new Set([
+          ...diff.addedPages,
+          ...diff.changedPages.map(p => p.path),
+        ]);
+
+        if (fs.existsSync(testDir)) {
+          const registryTests = path.join(registry.path, 'tests');
+          const freshTests = fs.readdirSync(testDir).filter(f => f.endsWith('.spec.ts'));
+          let restored = 0;
+          for (const testFile of freshTests) {
+            const pagePath = '/' + testFile.replace(/\.spec\.ts$/, '').replace(/-/g, '/');
+            const pageName = testFile.replace('.spec.ts', '');
+            const isChanged = changedPaths.has(pagePath) || changedPaths.has('/' + pageName) ||
+              Array.from(changedPaths).some(cp => cp.includes(pageName));
+            if (!isChanged) {
+              const oldTest = path.join(registryTests, testFile);
+              if (fs.existsSync(oldTest)) {
+                fs.copyFileSync(oldTest, path.join(testDir, testFile));
+                restored++;
+              }
+            }
+          }
+          if (restored > 0) log.dim(`Restored ${restored} unchanged test files from previous scan`);
+        }
       } else {
-        log.info('No changes detected from previous scan.');
+        log.info('No changes detected — keeping all previous tests.');
+        if (fs.existsSync(path.join(registry.path, 'tests'))) {
+          const registryTests = path.join(registry.path, 'tests');
+          if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+          fs.cpSync(registryTests, testDir, { recursive: true });
+        }
+      }
+    }
+
+    if (fs.existsSync(outDir)) {
+      fs.mkdirSync(registry.path, { recursive: true });
+      const entries = fs.readdirSync(outDir);
+      for (const entry of entries) {
+        const src = path.join(outDir, entry);
+        const dst = path.join(registry.path, entry);
+        if (fs.statSync(src).isDirectory()) {
+          fs.mkdirSync(dst, { recursive: true });
+          for (const child of fs.readdirSync(src)) fs.copyFileSync(path.join(src, child), path.join(dst, child));
+        } else {
+          fs.copyFileSync(src, dst);
+        }
       }
     }
 

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import fs from 'fs';
 import path from 'path';
-import { BrowserSessionManager, type TraceEntry } from '../core/browser-session';
+import { BrowserSessionManager, type TraceEntry, type MacroStep } from '../core/browser-session';
 import type { AppFlowModel, AppPage, AppApi, AuthModel, PageForm, FormField } from './flow-model';
 
 let _browserManager: BrowserSessionManager | null = null;
@@ -11,13 +11,30 @@ function getBrowserManager(): BrowserSessionManager {
   return _browserManager;
 }
 
+function safeName(pathname: string): string {
+  return pathname.replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'root';
+}
+
+function groupStepsByPage(steps: MacroStep[]): Array<{ page: string; steps: MacroStep[] }> {
+  const groups: Array<{ page: string; steps: MacroStep[] }> = [];
+  let currentGroup: MacroStep[] = [];
+  let currentPage = '/';
+  for (const step of steps) {
+    if (step.type === 'navigate' && step.url) {
+      if (currentGroup.length > 0) groups.push({ page: currentPage, steps: currentGroup });
+      try { currentPage = new URL(step.url).pathname; } catch { currentPage = '/'; }
+      currentGroup = [step];
+    } else { currentGroup.push(step); }
+  }
+  if (currentGroup.length > 0) groups.push({ page: currentPage, steps: currentGroup });
+  return groups;
+}
+
 export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
   return tool(async (input) => {
     const { sessionId, targetUrl, appName, outputDir } = input;
     const trace = getBrowserManager().getTrace(sessionId);
-    if (trace.length === 0) {
-      return 'No trace data found. Start browser_start_trace before navigating, then call this after browser_stop_trace.';
-    }
+    if (trace.length === 0) return 'No trace data found. Start browser_start_trace before navigating, then call this after browser_stop_trace.';
 
     const target = targetUrl || extractBaseUrl(trace) || 'http://localhost:3000';
     const name = appName || new URL(target).hostname;
@@ -28,65 +45,43 @@ export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
     const apis = buildApis(trace, target);
     const auth = detectAuth(trace);
     const summary = {
-      totalPages: pages.length,
-      totalApis: apis.length,
-      totalFlows: 0,
+      totalPages: pages.length, totalApis: apis.length, totalFlows: 0,
       authPages: pages.filter(p => p.auth !== 'public').length,
       formsFound: pages.reduce((s, p) => s + p.forms.length, 0),
       endpointsDetected: apis.length,
     };
-
     const model: AppFlowModel = {
-      appName: name,
-      baseUrl: target,
-      version: '1.0.0',
-      generatedAt: new Date().toISOString(),
-      pages,
-      apis,
-      auth,
-      flows: [],
-      summary,
+      appName: name, baseUrl: target, version: '1.0.0', generatedAt: new Date().toISOString(),
+      pages, apis, auth, flows: [], summary,
     };
 
     const artifacts: string[] = [];
-
     const yamlPath = path.join(out, 'flow.yaml');
-    fs.writeFileSync(yamlPath, toYaml(model));
-    artifacts.push(yamlPath);
-
+    fs.writeFileSync(yamlPath, toYaml(model)); artifacts.push(yamlPath);
     const jsonPath = path.join(out, 'flow.json');
-    fs.writeFileSync(jsonPath, JSON.stringify(model, null, 2));
-    artifacts.push(jsonPath);
-
+    fs.writeFileSync(jsonPath, JSON.stringify(model, null, 2)); artifacts.push(jsonPath);
     const harPath = path.join(out, 'session.har');
-    fs.writeFileSync(harPath, traceToHar(trace));
-    artifacts.push(harPath);
+    fs.writeFileSync(harPath, traceToHar(trace)); artifacts.push(harPath);
 
     const testSteps = getBrowserManager().getRecording(sessionId);
     if (testSteps.length > 0) {
       const { PlaywrightTestGenerator } = await import('../tools/test-generator');
       const testDir = path.join(out, 'tests');
-      const manifest = {
-        target,
-        roles: [{ name: 'default', credentials: {} }],
-        workflows: [{
-          name: `${name} Flow`,
-          test: {
-            happy: testSteps.map(s => {
-              switch (s.type) {
-                case 'navigate': return `Navigate to ${s.url}`;
-                case 'click': return `Click ${s.selector}`;
-                case 'fill': return `Fill ${s.selector} with "${s.value}"`;
-                default: return `${s.type}`;
-              }
-            }),
-            sad: [],
-          },
-        }],
-      };
-      const generator = new PlaywrightTestGenerator(target);
       fs.mkdirSync(testDir, { recursive: true });
-      const files = generator.generateFromManifest(manifest as any, testDir);
+      const pageGroups = groupStepsByPage(testSteps);
+      const workflows = pageGroups.map(g => ({
+        name: safeName(g.page),
+        test: { happy: g.steps.map(s => {
+          switch (s.type) {
+            case 'navigate': return `Navigate to ${s.url}`;
+            case 'click': return `Click ${s.selector}`;
+            case 'fill': return `Fill ${s.selector} with "${s.value}"`;
+            default: return `${s.type}`;
+          }
+        }), sad: [] },
+      }));
+      const generator = new PlaywrightTestGenerator(target);
+      const files = generator.generateFromManifest({ target, roles: [{ name: 'default', credentials: {} }], workflows } as any, testDir);
       artifacts.push(...files);
     }
 
@@ -95,14 +90,8 @@ export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
     return [
       `Built flow model for "${name}" from ${trace.length} trace entries.`,
       `Pages: ${summary.totalPages} | APIs: ${summary.totalApis} | Forms: ${summary.formsFound} | Auth: ${auth.type}`,
-      `Artifacts in ${out}:`,
-      ...artifacts.map(f => `  - ${f}`),
-      '',
-      'Pages:',
-      pageList,
-      '',
-      'APIs:',
-      apiList,
+      `Artifacts in ${out}:`, ...artifacts.map(f => `  - ${f}`), '',
+      'Pages:', pageList, '', 'APIs:', apiList,
     ].join('\n');
   }, {
     name: 'build_flow_from_trace',
@@ -112,6 +101,8 @@ export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
       targetUrl: z.string().optional().describe('Base target URL (auto-detected from trace if omitted)'),
       appName: z.string().optional().describe('Application name'),
       outputDir: z.string().optional().describe('Output directory for generated artifacts'),
+      existingTestDir: z.string().optional().describe('Directory with existing per-page .spec.ts files for incremental updates (unchanged pages are skipped)'),
+      changedPaths: z.array(z.string()).optional().default([]).describe('Page paths that changed — only these will regenerate tests. Empty = regenerate all.'),
     }),
   });
 }
