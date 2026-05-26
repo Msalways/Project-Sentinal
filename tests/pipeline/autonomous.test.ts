@@ -6,28 +6,37 @@ describe('AutonomousOrchestrator', () => {
     expect(mod.AutonomousOrchestrator).toBeDefined();
   });
 
-  it('should have 4 phases defined with names and goal prompts', async () => {
+  it('should export ORCHESTRATOR_PROMPT with spawn_subagent guidance', async () => {
     const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.PHASES).toBeDefined();
-    expect(Array.isArray(mod.PHASES)).toBe(true);
-    expect(mod.PHASES.length).toBe(4);
-    expect(mod.PHASES[0].name).toBe('recon');
-    expect(mod.PHASES[1].name).toBe('vuln');
-    expect(mod.PHASES[2].name).toBe('exploit');
-    expect(mod.PHASES[3].name).toBe('report');
-  });
-
-  it('each phase should have a name and goalPrompt', async () => {
-    const mod = await import('../../src/pipeline/autonomous');
-    for (const phase of mod.PHASES) {
-      expect(phase.name).toBeTruthy();
-      expect(phase.goalPrompt).toBeTruthy();
-    }
+    expect(mod.ORCHESTRATOR_PROMPT).toBeDefined();
+    expect(typeof mod.ORCHESTRATOR_PROMPT).toBe('string');
+    expect(mod.ORCHESTRATOR_PROMPT).toContain('spawn_subagent');
+    expect(mod.ORCHESTRATOR_PROMPT).toContain('targetUrl');
   });
 
   it('should export SKILL_SECTION constant', async () => {
     const mod = await import('../../src/pipeline/autonomous');
     expect(mod.SKILL_SECTION).toBeDefined();
     expect(typeof mod.SKILL_SECTION).toBe('string');
+  });
+
+  it('ORCHESTRATOR_PROMPT should include targetUrl guidance', async () => {
+    const mod = await import('../../src/pipeline/autonomous');
+    expect(mod.ORCHESTRATOR_PROMPT).toContain('targetUrl');
+    expect(mod.ORCHESTRATOR_PROMPT).toContain('How to Use Sub-Agents');
+    expect(mod.ORCHESTRATOR_PROMPT).toContain('TARGET_URL_HERE');
+  });
+
+  it('AutonomousOrchestrator should construct with model, target, outputDir', async () => {
+    const mod = await import('../../src/pipeline/autonomous');
+    const mockModel = {} as any;
+    const orchestrator = new mod.AutonomousOrchestrator({
+      model: mockModel,
+      target: 'https://example.com',
+      outputDir: '/tmp/test',
+    });
+    expect(orchestrator).toBeDefined();
+    expect(orchestrator.run).toBeDefined();
+    expect(typeof orchestrator.run).toBe('function');
   });
 });
