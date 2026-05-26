@@ -1,0 +1,340 @@
+import { z } from 'zod';
+import { tool, DynamicStructuredTool } from '@langchain/core/tools';
+import fs from 'fs';
+import path from 'path';
+import { BrowserSessionManager, type TraceEntry } from '../core/browser-session';
+import type { AppFlowModel, AppPage, AppApi, AuthModel, PageForm, FormField } from './flow-model';
+
+let _browserManager: BrowserSessionManager | null = null;
+function getBrowserManager(): BrowserSessionManager {
+  if (!_browserManager) _browserManager = new BrowserSessionManager(false);
+  return _browserManager;
+}
+
+export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, targetUrl, appName, outputDir } = input;
+    const trace = getBrowserManager().getTrace(sessionId);
+    if (trace.length === 0) {
+      return 'No trace data found. Start browser_start_trace before navigating, then call this after browser_stop_trace.';
+    }
+
+    const target = targetUrl || extractBaseUrl(trace) || 'http://localhost:3000';
+    const name = appName || new URL(target).hostname;
+    const out = outputDir || './flow-output';
+    fs.mkdirSync(out, { recursive: true });
+
+    const pages = buildPages(trace, target);
+    const apis = buildApis(trace, target);
+    const auth = detectAuth(trace);
+    const summary = {
+      totalPages: pages.length,
+      totalApis: apis.length,
+      totalFlows: 0,
+      authPages: pages.filter(p => p.auth !== 'public').length,
+      formsFound: pages.reduce((s, p) => s + p.forms.length, 0),
+      endpointsDetected: apis.length,
+    };
+
+    const model: AppFlowModel = {
+      appName: name,
+      baseUrl: target,
+      version: '1.0.0',
+      generatedAt: new Date().toISOString(),
+      pages,
+      apis,
+      auth,
+      flows: [],
+      summary,
+    };
+
+    const artifacts: string[] = [];
+
+    const yamlPath = path.join(out, 'flow.yaml');
+    fs.writeFileSync(yamlPath, toYaml(model));
+    artifacts.push(yamlPath);
+
+    const jsonPath = path.join(out, 'flow.json');
+    fs.writeFileSync(jsonPath, JSON.stringify(model, null, 2));
+    artifacts.push(jsonPath);
+
+    const harPath = path.join(out, 'session.har');
+    fs.writeFileSync(harPath, traceToHar(trace));
+    artifacts.push(harPath);
+
+    const testSteps = getBrowserManager().getRecording(sessionId);
+    if (testSteps.length > 0) {
+      const { PlaywrightTestGenerator } = await import('../tools/test-generator');
+      const testDir = path.join(out, 'tests');
+      const manifest = {
+        target,
+        roles: [{ name: 'default', credentials: {} }],
+        workflows: [{
+          name: `${name} Flow`,
+          test: {
+            happy: testSteps.map(s => {
+              switch (s.type) {
+                case 'navigate': return `Navigate to ${s.url}`;
+                case 'click': return `Click ${s.selector}`;
+                case 'fill': return `Fill ${s.selector} with "${s.value}"`;
+                default: return `${s.type}`;
+              }
+            }),
+            sad: [],
+          },
+        }],
+      };
+      const generator = new PlaywrightTestGenerator(target);
+      fs.mkdirSync(testDir, { recursive: true });
+      const files = generator.generateFromManifest(manifest as any, testDir);
+      artifacts.push(...files);
+    }
+
+    const pageList = pages.map(p => `  [${p.type}] ${p.path} — ${p.title}`).join('\n');
+    const apiList = apis.slice(0, 20).map(a => `  ${a.method} ${a.path}`).join('\n');
+    return [
+      `Built flow model for "${name}" from ${trace.length} trace entries.`,
+      `Pages: ${summary.totalPages} | APIs: ${summary.totalApis} | Forms: ${summary.formsFound} | Auth: ${auth.type}`,
+      `Artifacts in ${out}:`,
+      ...artifacts.map(f => `  - ${f}`),
+      '',
+      'Pages:',
+      pageList,
+      '',
+      'APIs:',
+      apiList,
+    ].join('\n');
+  }, {
+    name: 'build_flow_from_trace',
+    description: 'Automatically build the app flow model from captured network trace. Start browser_start_trace, navigate the app, then browser_stop_trace and call this. Generates flow.yaml, flow.json, session.har, and Playwright tests automatically.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      targetUrl: z.string().optional().describe('Base target URL (auto-detected from trace if omitted)'),
+      appName: z.string().optional().describe('Application name'),
+      outputDir: z.string().optional().describe('Output directory for generated artifacts'),
+    }),
+  });
+}
+
+function extractBaseUrl(trace: TraceEntry[]): string {
+  const nav = trace.find(e => e.type === 'navigation' && e.status === 200);
+  if (nav) {
+    try {
+      const u = new URL(nav.url);
+      return `${u.protocol}//${u.host}`;
+    } catch {}
+  }
+  return '';
+}
+
+function buildPages(trace: TraceEntry[], baseUrl: string): AppPage[] {
+  const pageMap = new Map<string, AppPage>();
+
+  for (const entry of trace) {
+    if (entry.type !== 'navigation') continue;
+    try {
+      const u = new URL(entry.url);
+      if (!urlMatches(u, baseUrl)) continue;
+      const pathname = u.pathname;
+
+      if (!pageMap.has(pathname)) {
+        pageMap.set(pathname, {
+          path: pathname,
+          title: '',
+          type: 'page',
+          auth: 'public',
+          forms: [],
+          transitions: [],
+          actions: [],
+          detectedEndpoints: [],
+        });
+      }
+    } catch {}
+  }
+
+  const navOrder = trace.filter(e => e.type === 'navigation').map(e => {
+    try { return new URL(e.url).pathname; } catch { return ''; }
+  }).filter(Boolean);
+
+  for (let i = 1; i < navOrder.length; i++) {
+    const from = navOrder[i - 1];
+    const to = navOrder[i];
+    const fromPage = pageMap.get(from);
+    if (fromPage && from !== to) {
+      const exists = fromPage.transitions.some(t => t.to === to);
+      if (!exists) {
+        fromPage.transitions.push({
+          trigger: 'navigation',
+          from,
+          to,
+          method: 'GET',
+          endpoint: to,
+          requiresAuth: false,
+        });
+      }
+    }
+  }
+
+  const seenForms = new Set<string>();
+  for (const entry of trace) {
+    if (entry.type !== 'form' && entry.method !== 'POST') continue;
+    const sourcePage = extractPath(entry.sourcePage);
+    const page = pageMap.get(sourcePage) || pageMap.get('/');
+    if (!page) continue;
+
+    try {
+      const u = new URL(entry.url);
+      if (!urlMatches(u, baseUrl)) continue;
+      const formKey = `${entry.method}:${u.pathname}`;
+      if (seenForms.has(formKey)) continue;
+      seenForms.add(formKey);
+
+      const body = entry.requestBody || '';
+      const fields: FormField[] = [];
+      if (body.includes('=')) {
+        const pairs = body.split('&');
+        for (const pair of pairs) {
+          const [k] = pair.split('=');
+          if (k) fields.push({ name: decodeURIComponent(k), type: 'text', required: false });
+        }
+      }
+      if (body.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(body);
+          for (const k of Object.keys(parsed)) {
+            fields.push({ name: k, type: typeof parsed[k], required: false });
+          }
+        } catch {}
+      }
+
+      page.forms.push({
+        action: u.pathname,
+        method: entry.method,
+        fields,
+      });
+    } catch {}
+  }
+
+  return Array.from(pageMap.values());
+}
+
+function buildApis(trace: TraceEntry[], baseUrl: string): AppApi[] {
+  const seen = new Set<string>();
+  const apis: AppApi[] = [];
+
+  for (const entry of trace) {
+    if (entry.type !== 'xhr' && entry.type !== 'fetch') continue;
+    try {
+      const u = new URL(entry.url);
+      if (!urlMatches(u, baseUrl)) continue;
+      const key = `${entry.method}:${u.pathname}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const headers = Object.keys(entry.requestHeaders);
+      const hasAuth = headers.some(h => /authorization|cookie/i.test(h));
+
+      apis.push({
+        method: entry.method,
+        path: u.pathname,
+        params: [...u.searchParams.keys()],
+        headers,
+        auth: hasAuth,
+        sampleResponse: entry.status ? `${entry.status}` : undefined,
+      });
+    } catch {}
+  }
+
+  return apis;
+}
+
+function detectAuth(trace: TraceEntry[]): AuthModel {
+  let tokenInHeader = false;
+  let tokenInCookie = false;
+  let hasLogin = false;
+
+  for (const entry of trace) {
+    const headers = Object.keys(entry.requestHeaders);
+    if (headers.some(h => /^authorization$/i.test(h))) tokenInHeader = true;
+    if (headers.some(h => /^cookie$/i.test(h))) tokenInCookie = true;
+    if (entry.url.includes('login') || entry.url.includes('signin')) hasLogin = true;
+  }
+
+  return {
+    type: tokenInHeader ? 'jwt' : tokenInCookie ? 'session' : hasLogin ? 'multi' : 'none',
+    roles: ['default'],
+    tokenLocation: tokenInHeader ? 'header' : tokenInCookie ? 'cookie' : undefined,
+  };
+}
+
+function extractPath(url: string): string {
+  try { return new URL(url).pathname; } catch { return '/'; }
+}
+
+function urlMatches(u: URL, baseUrl: string): boolean {
+  try {
+    const base = new URL(baseUrl);
+    return u.hostname === base.hostname;
+  } catch { return true; }
+}
+
+function toYaml(model: AppFlowModel): string {
+  const lines: string[] = [];
+  lines.push(`app: "${model.appName}"`);
+  lines.push(`base_url: "${model.baseUrl}"`);
+  lines.push(`generated_at: "${model.generatedAt}"`);
+  lines.push('');
+  lines.push(`auth: ${model.auth.type}`);
+  if (model.auth.tokenLocation) lines.push(`token: ${model.auth.tokenLocation}`);
+  lines.push('');
+  for (const p of model.pages) {
+    lines.push(`- path: "${p.path}"`);
+    lines.push(`  type: "${p.type}"`);
+    if (p.forms.length > 0) {
+      lines.push('  forms:');
+      for (const f of p.forms) {
+        lines.push(`    ${f.method} ${f.action}`);
+        if (f.fields.length > 0) lines.push(`      fields: [${f.fields.map(fd => fd.name).join(', ')}]`);
+      }
+    }
+    if (p.transitions.length > 0) {
+      for (const t of p.transitions) lines.push(`  ${t.trigger}: ${t.from} → ${t.to}`);
+    }
+  }
+  lines.push('');
+  lines.push('apis:');
+  for (const a of model.apis) {
+    lines.push(`  ${a.method} ${a.path}${a.auth ? ' [auth]' : ''}`);
+  }
+  lines.push('');
+  lines.push('summary:');
+  lines.push(`  pages: ${model.summary.totalPages}`);
+  lines.push(`  apis: ${model.summary.totalApis}`);
+  return lines.join('\n');
+}
+
+function traceToHar(trace: TraceEntry[]): string {
+  const entries = trace.map((e, i) => ({
+    startedDateTime: new Date(Date.now() - (trace.length - i) * 500).toISOString(),
+    time: Math.max(e.duration, 1),
+    request: {
+      method: e.method,
+      url: e.url,
+      headers: Object.entries(e.requestHeaders).map(([n, v]) => ({ name: n, value: v })),
+      postData: e.requestBody ? { mimeType: 'application/x-www-form-urlencoded', text: e.requestBody } : undefined,
+    },
+    response: {
+      status: e.status,
+      statusText: `${e.status}`,
+      headers: Object.entries(e.responseHeaders).map(([n, v]) => ({ name: n, value: v })),
+    },
+  }));
+
+  return JSON.stringify({
+    log: {
+      version: '1.2',
+      creator: { name: 'Ultimatrix Trace', version: '1.0' },
+      entries,
+    },
+  }, null, 2);
+}

@@ -56,7 +56,36 @@ npx tsx src/cli/index.ts scan -t http://localhost:8089 --provider mock
 
 The mock provider returns canned responses — useful for testing the pipeline boots correctly.
 
-## 3. Interactive REPL
+## 3. Map Application Flow
+
+Automatically explores and documents the application via live browser:
+
+```bash
+npx tsx src/cli/index.ts map -t https://your-app.com -o ./flow-output
+```
+
+### What it does:
+1. Opens a browser and starts **silent network tracing** — captures every request, response, auth header, and payload
+2. Agent navigates, clicks, fills, and submits forms to explore the app
+3. Agent calls `build_flow_from_trace` which generates:
+   - `flow.yaml` — structured app model (pages, forms, API endpoints, auth)
+   - `flow.json` — same as YAML in JSON format
+   - `session.har` — full HAR file of all captured traffic
+   - `tests/*.spec.ts` — Playwright test files from recorded interactions
+
+### With Git Registry (diff tracking across releases):
+
+```bash
+# First release — creates the baseline
+npx tsx src/cli/index.ts map -t https://your-app.com --flow-repo https://github.com/team/app-flow.git
+
+# Next release — pulls baseline, diffs, focuses on what changed
+npx tsx src/cli/index.ts scan -t https://your-app.com --flow ./flow-output
+```
+
+The git registry stores the flow model across releases. The scan command can then diff against the previous model to find what changed.
+
+## 4. Interactive REPL
 
 ```bash
 # Auto-REPL (if no config exists, drops into wizard, then REPL)
@@ -70,7 +99,7 @@ Commands:
 - Type anything — agent responds with tools + thinking
 - `/quit` — exit
 
-## 4. Demo Mode
+## 5. Demo Mode
 
 ```bash
 npx tsx src/cli/index.ts demo
@@ -78,7 +107,7 @@ npx tsx src/cli/index.ts demo
 
 Runs a canned assessment with fake findings — no API key needed.
 
-## 5. Explore Tools
+## 6. Explore Tools
 
 ```bash
 # List all registered tools
@@ -88,21 +117,21 @@ npx tsx src/cli/index.ts tools
 npx tsx src/cli/index.ts providers
 ```
 
-## 6. Build for Production
+## 7. Build for Production
 
 ```bash
 npm run build
 # Output: dist/index.cjs, dist/cli/index.js
 ```
 
-## 7. Docker
+## 8. Docker
 
 ```bash
 docker build -t ultimatrix .
 docker run --rm -e OPENAI_API_KEY=sk-... ultimatrix scan -t https://your-app.com
 ```
 
-## 8. CI/CD Integration
+## 9. CI/CD Integration
 
 The `.github/workflows/ultimatrix-scan.yml` runs a headless security scan on every push:
 
@@ -112,7 +141,7 @@ The `.github/workflows/ultimatrix-scan.yml` runs a headless security scan on eve
     npx tsx src/cli/index.ts scan -t ${{ secrets.SCAN_TARGET }}
 ```
 
-## 9. All Tests
+## 10. All Tests
 
 ```bash
 npx vitest run
@@ -126,6 +155,9 @@ npx vitest run
 | `npx tsx src/cli/index.ts` | Gate check → REPL |
 | `npx tsx src/cli/index.ts init` | Interactive setup wizard |
 | `npx tsx src/cli/index.ts scan -t <url>` | Autonomous security scan |
+| `npx tsx src/cli/index.ts map -t <url>` | App flow mapping with network trace |
+| `npx tsx src/cli/index.ts map -t <url> --flow-repo <git-url>` | Map + commit to git registry |
+| `npx tsx src/cli/index.ts test -s <session>` | Generate Playwright tests from recording |
 | `npx tsx src/cli/index.ts demo` | Demo with mock findings |
 | `npx tsx src/cli/index.ts tools` | List all security tools |
 | `npx tsx src/cli/index.ts providers` | List LLM providers |

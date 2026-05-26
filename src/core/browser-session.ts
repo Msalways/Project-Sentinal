@@ -1,5 +1,18 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 
+export interface TraceEntry {
+  type: 'navigation' | 'xhr' | 'fetch' | 'form' | 'resource' | 'script';
+  url: string;
+  method: string;
+  status: number;
+  requestHeaders: Record<string, string>;
+  requestBody?: string;
+  responseHeaders: Record<string, string>;
+  sourcePage: string;
+  timestamp: number;
+  duration: number;
+}
+
 export interface MacroStep {
   type: 'navigate' | 'click' | 'fill' | 'wait' | 'extract' | 'screenshot' | 'evaluate';
   selector?: string;
@@ -23,10 +36,13 @@ interface SessionState {
   context: BrowserContext;
   page: Page;
   createdAt: number;
+  trace: TraceEntry[];
+  tracing: boolean;
 }
 
 export class BrowserSessionManager {
   private sessions = new Map<string, SessionState>();
+  private recordings = new Map<string, MacroStep[]>();
   private headless: boolean;
 
   constructor(headless = false) {
@@ -51,13 +67,94 @@ export class BrowserSessionManager {
     });
     const page = await context.newPage();
 
-    this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now() });
+    this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false });
     return page;
+  }
+
+  startTrace(sessionId: string): string {
+    const state = this.sessions.get(sessionId);
+    if (!state) return `No session "${sessionId}". Create one first with navigate.`;
+    if (state.tracing) return `Tracing already active for session "${sessionId}".`;
+
+    state.tracing = true;
+    state.trace = [];
+
+    const startTime = Date.now();
+
+    state.context.on('request', (req) => {
+      if (!state.tracing) return;
+      const resourceType = req.resourceType();
+      let type: TraceEntry['type'] = 'resource';
+      if (resourceType === 'document') type = 'navigation';
+      else if (resourceType === 'xhr') type = 'xhr';
+      else if (resourceType === 'fetch') type = 'fetch';
+      else if (resourceType === 'form') type = 'form';
+      else if (resourceType === 'script') type = 'script';
+
+      state.trace.push({
+        type,
+        url: req.url(),
+        method: req.method(),
+        status: 0,
+        requestHeaders: req.headers(),
+        requestBody: req.postData() || undefined,
+        responseHeaders: {},
+        sourcePage: state.page.url(),
+        timestamp: Date.now() - startTime,
+        duration: 0,
+      });
+    });
+
+    state.context.on('response', (res) => {
+      if (!state.tracing) return;
+      const url = res.url();
+      const entry = [...state.trace].reverse().find(e => e.url === url && e.status === 0);
+      if (entry) {
+        entry.status = res.status();
+        entry.responseHeaders = res.headers();
+        entry.duration = Date.now() - startTime - entry.timestamp;
+      }
+    });
+
+    return `Tracing started for session "${sessionId}". All network requests will be captured.`;
+  }
+
+  stopTrace(sessionId: string): TraceEntry[] {
+    const state = this.sessions.get(sessionId);
+    if (!state) return [];
+    state.tracing = false;
+    const entries = state.trace;
+    state.trace = [];
+    return entries;
+  }
+
+  getTrace(sessionId: string): TraceEntry[] {
+    return this.sessions.get(sessionId)?.trace || [];
+  }
+
+  startRecording(sessionId: string): void {
+    this.recordings.set(sessionId, []);
+  }
+
+  stopRecording(sessionId: string): MacroStep[] {
+    const steps = this.recordings.get(sessionId) || [];
+    this.recordings.delete(sessionId);
+    return steps;
+  }
+
+  getRecording(sessionId: string): MacroStep[] {
+    return this.recordings.get(sessionId) || [];
+  }
+
+  private record(sessionId: string, step: MacroStep): void {
+    const recording = this.recordings.get(sessionId);
+    if (recording) recording.push(step);
   }
 
   async navigate(sessionId: string, url: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    this.record(sessionId, { type: 'navigate', url });
     return page.url();
   }
 
@@ -65,6 +162,7 @@ export class BrowserSessionManager {
     const page = await this.getOrCreate(sessionId);
     await page.waitForSelector(selector, { timeout: 10000 });
     await page.click(selector);
+    this.record(sessionId, { type: 'click', selector });
     return `Clicked: ${selector}`;
   }
 
@@ -72,6 +170,7 @@ export class BrowserSessionManager {
     const page = await this.getOrCreate(sessionId);
     await page.waitForSelector(selector, { timeout: 10000 });
     await page.fill(selector, value);
+    this.record(sessionId, { type: 'fill', selector, value });
     return `Filled: ${selector}`;
   }
 

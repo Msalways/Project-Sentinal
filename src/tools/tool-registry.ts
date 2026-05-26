@@ -9,7 +9,9 @@ import { createSessionCheckTool, createLoginMacroTool } from './auth-scan';
 import { createFileExfilTool, createReverseShellTool, createCredDumpTool } from './post-exploit';
 import { createOOBTriggerTool } from './oob-trigger';
 import { createOOBFindTool } from './oob-find';
-import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool } from './browser-tools';
+import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool } from './browser-tools';
+import { createGeneratePlaywrightTestTool } from './test-gen-tool';
+import { createBuildFlowFromTraceTool } from '../flow/build-from-trace';
 import { OOBServer } from '../core/oob-server';
 import { BrowserSessionManager } from '../core/browser-session';
 
@@ -1088,6 +1090,62 @@ toolRegistry.register({
   factory: () => createBrowserCloseTool(),
 });
 
+toolRegistry.register({
+  name: 'browser_start_recording',
+  category: 'browser',
+  description: 'Start recording browser actions (navigate, click, fill) for later Playwright test generation',
+  tags: ['browser', 'playwright', 'recording', 'test-generation'],
+  factory: () => createBrowserStartRecordingTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_stop_recording',
+  category: 'browser',
+  description: 'Stop recording browser actions and return the recorded steps',
+  tags: ['browser', 'playwright', 'recording', 'test-generation'],
+  factory: () => createBrowserStopRecordingTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_recording',
+  category: 'browser',
+  description: 'Get the current recorded actions for a browser session without stopping recording',
+  tags: ['browser', 'playwright', 'recording', 'test-generation'],
+  factory: () => createBrowserGetRecordingTool(),
+});
+
+toolRegistry.register({
+  name: 'generate_playwright_test',
+  category: 'utility',
+  description: 'Generate Playwright test files from recorded browser session actions. Start recording first with browser_start_recording, perform actions, then call this.',
+  tags: ['playwright', 'test-generation', 'testing', 'browser'],
+  factory: () => createGeneratePlaywrightTestTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_start_trace',
+  category: 'browser',
+  description: 'Start automatic network request tracing on a browser session. Captures all XHR, fetch, navigation, form submits with headers and payloads.',
+  tags: ['browser', 'trace', 'network', 'recon'],
+  factory: () => createBrowserStartTraceTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_stop_trace',
+  category: 'browser',
+  description: 'Stop network tracing and return summary of captured entries.',
+  tags: ['browser', 'trace', 'network', 'recon'],
+  factory: () => createBrowserStopTraceTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_trace',
+  category: 'browser',
+  description: 'Show captured network trace entries with URLs, methods, status codes, and types.',
+  tags: ['browser', 'trace', 'network', 'recon'],
+  factory: () => createBrowserGetTraceTool(),
+});
+
 // ── Authenticated Scanning Tools ──
 
 toolRegistry.register({
@@ -1156,6 +1214,16 @@ toolRegistry.register({
   description: 'Check OOB callback server for incoming callbacks to confirm blind SSRF, XXE, or SQLi',
   tags: ['oob', 'blind', 'callback', 'detection', 'verification'],
   factory: () => createOOBFindTool(new OOBServer()),
+});
+
+// ── Flow Mapping Tools ──
+
+toolRegistry.register({
+  name: 'build_flow_from_trace',
+  category: 'recon',
+  description: 'Automatically build app flow model from captured network trace. Start browser_start_trace, navigate the app, stop trace, then call this. Generates flow.yaml, flow.json, session.har, and Playwright tests.',
+  tags: ['flow', 'mapping', 'trace', 'artifact'],
+  factory: () => createBuildFlowFromTraceTool(),
 });
 
 // ── Helpers ──

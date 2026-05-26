@@ -1,6 +1,6 @@
 # 🛡️ Ultimatrix
 
-**AI-Powered Security Team-in-a-Box** — A multi-agent security testing platform with 50+ built-in security tools, live browser control, skill-based expert guidance, and a dynamic sub-agent orchestrator that creates specialized agents on-the-fly.
+**AI-Powered Security Team-in-a-Box** — A multi-agent security testing platform with 60+ built-in security tools, live browser control, skill-based expert guidance, automatic app flow mapping via network tracing, and a dynamic sub-agent orchestrator that creates specialized agents on-the-fly.
 
 > Built for **Microsoft Build AI Hackathon 2026** | Track: Security in the Agentic Future
 
@@ -50,6 +50,26 @@ npx tsx src/cli/index.ts
 
 Commands: `/quit` to exit. All other input goes to the agent.
 
+### 🗺️ App Flow Mapping (`ultimatrix map`)
+**Automatic application flow discovery** — explores the app via live browser, silently captures every network request, and generates a complete flow model:
+
+```bash
+npx tsx src/cli/index.ts map -t https://target.com -o ./flow-output
+```
+
+How it works:
+1. Agent starts `browser_start_trace` → Playwright intercepts all requests/responses silently
+2. Agent naturally navigates, clicks, fills forms — the trace captures URLs, methods, request bodies, auth headers (Bearer/Cookie/Basic), response statuses
+3. Agent calls `build_flow_from_trace` → automatically generates:
+   - `flow.yaml` / `flow.json` — pages, forms, API endpoints, auth model
+   - `session.har` — full HAR file of all captured traffic
+   - `tests/*.spec.ts` — Playwright test files from recorded actions
+
+```bash
+# With git registry for diff-based scanning across releases
+npx tsx src/cli/index.ts map -t https://target.com --flow-repo https://github.com/team/app-flow.git
+```
+
 ### 🎯 Ultimatrix Init (`ultimatrix init`)
 Interactive wizard that writes `ultimatrix.yaml`:
 
@@ -92,6 +112,24 @@ load_skill(name="sql-injection")
 | `browser_evaluate` | Execute JavaScript in the browser context |
 | `browser_close` | Close a browser session |
 | `browser_record_login` | Record and replay a login macro |
+
+### Network Tracing & App Flow Mapping
+
+| Tool | What It Does |
+|------|-------------|
+| `browser_start_trace` | Start automatic network request interception — captures URLs, methods, headers, payloads, auth |
+| `browser_stop_trace` | Stop tracing and return entry summary |
+| `browser_get_trace` | View captured trace entries filtered by type |
+| `build_flow_from_trace` | Auto-generate flow model, HAR, Playwright tests from trace data |
+
+### Action Recording & Test Generation
+
+| Tool | What It Does |
+|------|-------------|
+| `browser_start_recording` | Start recording browser actions (navigate, click, fill) |
+| `browser_stop_recording` | Stop recording and return recorded steps |
+| `browser_get_recording` | View recorded steps without stopping |
+| `generate_playwright_test` | Generate Playwright `.spec.ts` files from recorded session |
 
 ### Dynamic Sub-Agent Orchestration
 
@@ -208,13 +246,15 @@ load_skill(name="sql-injection")
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  CLI ENTRY POINTS                                                    │
-│  sentinel (no args) → gate check → REPL                              │
-│  ultimatrix init      → interactive wizard → writes ultimatrix.yaml       │
-│  ultimatrix scan -t   → AutonomousOrchestrator → live streaming        │
-│  ultimatrix demo      → mock assessment (no API key needed)             │
-│  ultimatrix providers → list LLM providers                              │
-│  ultimatrix tools     → list security tools                             │
-│  ultimatrix agents    → list agent roles                                │
+│  ultimatrix (no args) → gate check → REPL                            │
+│  ultimatrix init      → interactive wizard → writes ultimatrix.yaml   │
+│  ultimatrix scan -t   → AutonomousOrchestrator → live streaming       │
+│  ultimatrix map  -t   → Flow mapping → flow.yaml + HAR + Playwright  │
+│  ultimatrix test -s   → Generate Playwright tests from recording      │
+│  ultimatrix demo      → mock assessment (no API key needed)           │
+│  ultimatrix providers → list LLM providers                            │
+│  ultimatrix tools     → list security tools                           │
+│  ultimatrix agents    → list agent roles                              │
 └──────────────────────────────────────────────────────────────────────┘
                               │
                               ▼

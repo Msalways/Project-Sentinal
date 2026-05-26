@@ -8,7 +8,8 @@ import { toolRegistry } from '../tools/tool-registry';
 import { agentRegistry } from '../agents/agent-registry';
 import type { LLMProviderName, ScanTarget } from '../core/types';
 import yaml from 'js-yaml';
-import { Logger } from './logger';
+import { Logger, colors } from './logger';
+import type { DynamicStructuredTool } from '@langchain/core/tools';
 
 const log = new Logger();
 
@@ -104,6 +105,91 @@ program
     }
   });
 
+// ── map: Autonomous app flow mapping ──
+program
+  .command('map')
+  .description('Autonomously explore and map the application flow — generates flow.yaml, tests, HAR')
+  .option('-t, --target <url>', 'Target URL')
+  .option('-o, --output <dir>', 'Output directory', './flow-output')
+  .option('--headless', 'Run browser in headless mode')
+  .option('--flow-repo <url>', 'Git registry URL for storing/retrieving flow data')
+  .option('--provider <provider>', 'LLM provider')
+  .option('--model <model>', 'Model ID')
+  .action(async (opts) => {
+    if (!opts.target) {
+      log.error('No target specified. Use -t <url>');
+      process.exit(1);
+    }
+
+    const config = await loadRuntimeConfig({ ...opts });
+    const model = await loadModel(config);
+
+    const { createDeepAgent } = await import('deepagents');
+    const { toolRegistry: registry } = await import('../tools/tool-registry');
+
+    const allTools: DynamicStructuredTool[] = registry.getByCategory('browser') as DynamicStructuredTool[];
+    const traceTool = registry.get('build_flow_from_trace');
+    if (traceTool) allTools.push(traceTool);
+
+    const agent = createDeepAgent({
+      model,
+      tools: allTools,
+      systemPrompt: `You are exploring and mapping a web application.
+
+Goal: navigate through every page, interact with forms, and discover all API endpoints so the app's flow model can be built automatically.
+
+Steps:
+1. Start browser_start_trace to begin capturing all network requests
+2. Navigate to ${opts.target} with browser_navigate
+3. Click every link you find, fill and submit forms with test data
+4. After thorough exploration, call browser_stop_trace
+5. Finally, call build_flow_from_trace to generate all artifacts
+
+The network trace automatically captures every request including API calls, form submissions, auth headers, and payloads — no manual per-page recording needed.
+
+Never use example.com — the target is ${opts.target}`,
+    });
+
+    log.header('App Flow Mapping', opts.target);
+
+    const stream = await agent.stream(
+      { messages: [{ role: 'user', content: `Map the application at ${opts.target}. Start by navigating to it with browser_navigate.` }] },
+      { streamMode: 'messages', subgraphs: true },
+    );
+
+    for await (const [namespace, chunk] of stream) {
+      const msg = chunk?.[0];
+      if (!msg) continue;
+
+      if (msg.text) process.stdout.write(msg.text);
+
+      const tcChunks = (msg as any).tool_call_chunks;
+      if (tcChunks?.length) {
+        for (const tc of tcChunks) {
+          if (tc.name) process.stdout.write(colors.dim(`\n→ ${tc.name}\n`));
+        }
+      }
+
+      if ((msg as any)._getType?.() === 'tool') {
+        const result = msg.content;
+        const resultStr = typeof result === 'string' ? result.slice(0, 500) : JSON.stringify(result).slice(0, 500);
+        if (resultStr?.trim()) process.stdout.write(colors.dim(`  ↳ ${resultStr}\n`));
+      }
+    }
+
+    log.divider();
+
+    const { FlowRegistry } = await import('../flow/git-registry');
+    if (opts.flowRepo) {
+      const registry = new FlowRegistry({ repoUrl: opts.flowRepo, localPath: path.join(opts.output, '.flow-registry') });
+      const committed = registry.commit(opts.output, `Flow map for ${opts.target}`);
+      if (committed) log.success(`Flow artifacts committed to git registry: ${opts.flowRepo}`);
+      else log.info('No changes since last commit');
+    }
+
+    log.header('Mapping Complete', `Artifacts in ${opts.output}`);
+  });
+
 // ── demo: Quick mock scan ──
 program
   .command('demo')
@@ -159,6 +245,54 @@ program
     for (const agent of agentRegistry.getAll()) {
       log.info(`${agent.name}: ${agent.description}`);
     }
+  });
+
+// ── test: Generate Playwright tests from recorded browser sessions ──
+program
+  .command('test')
+  .description('Generate Playwright tests from recorded browser sessions')
+  .option('-s, --session <id>', 'Session ID', 'default')
+  .option('-o, --output <dir>', 'Output directory', './playwright-tests')
+  .option('--name <name>', 'Workflow name', 'Recorded Workflow')
+  .action(async (opts) => {
+    const { BrowserSessionManager } = await import('../core/browser-session');
+    const { PlaywrightTestGenerator } = await import('../tools/test-generator');
+    const mgr = new BrowserSessionManager(false);
+    const steps = mgr.getRecording(opts.session);
+    if (steps.length === 0) {
+      log.error(`No recording found for session "${opts.session}".`);
+      log.info('Use the browser recording tools via REPL or agent to record actions first.');
+      log.info('  ultimatrix interact -t <url>  — then call browser_start_recording, navigate, click, fill, generate_playwright_test');
+      process.exit(1);
+    }
+
+    const target = steps.find(s => s.url)?.url || 'http://localhost:3000';
+    const manifest = {
+      target,
+      roles: [{ name: 'default', credentials: {} }],
+      workflows: [{
+        name: opts.name,
+        test: {
+          happy: steps.map(s => {
+            switch (s.type) {
+              case 'navigate': return `Navigate to ${s.url}`;
+              case 'click': return `Click ${s.selector}`;
+              case 'fill': return `Fill ${s.selector} with "${s.value}"`;
+              default: return `${s.type}: ${JSON.stringify(s)}`;
+            }
+          }),
+          sad: [],
+        },
+      }],
+    };
+
+    const generator = new PlaywrightTestGenerator(target);
+    const outDir = path.join(opts.output, opts.name.toLowerCase().replace(/[^a-z0-9]/g, '-'));
+    fs.mkdirSync(outDir, { recursive: true });
+    const generated = generator.generateFromManifest(manifest as any, outDir);
+
+    log.success(`Generated ${generated.length} Playwright test files:`);
+    for (const f of generated) log.dim(`  ${f}`);
   });
 
 program.parse();

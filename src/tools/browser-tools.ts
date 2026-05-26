@@ -119,3 +119,86 @@ export function createBrowserCloseTool(): DynamicStructuredTool {
     schema: SessionIdSchema,
   });
 }
+
+export function createBrowserStartRecordingTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    getBrowserManager().startRecording(sessionId);
+    return `Started recording actions for session ${sessionId}`;
+  }, {
+    name: 'browser_start_recording',
+    description: 'Start recording browser actions (navigate, click, fill) for later test generation',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserStopRecordingTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    const steps = getBrowserManager().stopRecording(sessionId);
+    const summary = steps.map((s, i) => `  ${i + 1}. ${s.type}${s.selector ? ` "${s.selector}"` : ''}${s.value ? ` = "${s.value}"` : ''}${s.url ? ` → ${s.url}` : ''}`).join('\n');
+    return `Stopped recording for session ${sessionId}. Recorded ${steps.length} steps:\n${summary}`;
+  }, {
+    name: 'browser_stop_recording',
+    description: 'Stop recording browser actions and return the recorded steps',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserGetRecordingTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    const steps = getBrowserManager().getRecording(sessionId);
+    const summary = steps.map((s, i) => `  ${i + 1}. ${s.type}${s.selector ? ` "${s.selector}"` : ''}${s.value ? ` = "${s.value}"` : ''}${s.url ? ` → ${s.url}` : ''}`).join('\n');
+    return `Session ${sessionId} has ${steps.length} recorded steps:\n${summary}`;
+  }, {
+    name: 'browser_get_recording',
+    description: 'Get the current recorded actions for a browser session without stopping recording',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserStartTraceTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    const result = getBrowserManager().startTrace(sessionId);
+    return result;
+  }, {
+    name: 'browser_start_trace',
+    description: 'Start automatic request tracing on a browser session. Captures all network requests, payloads, headers, and responses silently. Use browser_stop_trace to retrieve.',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserStopTraceTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    const entries = getBrowserManager().stopTrace(sessionId);
+    const navs = entries.filter(e => e.type === 'navigation').length;
+    const apis = entries.filter(e => e.type === 'xhr' || e.type === 'fetch').length;
+    const authHeaders = entries.some(e => Object.keys(e.requestHeaders).some(h => /authorization|cookie/i.test(h)));
+    return `Stopped trace for session "${sessionId}". Captured ${entries.length} entries (${navs} navigations, ${apis} API calls)${authHeaders ? ', auth headers detected' : ''}.`;
+  }, {
+    name: 'browser_stop_trace',
+    description: 'Stop automatic request tracing and return the number of captured entries',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserGetTraceTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, filterType } = input;
+    const entries = getBrowserManager().getTrace(sessionId);
+    const filtered = filterType ? entries.filter(e => e.type === filterType) : entries;
+    const lines = filtered.slice(0, 30).map((e, i) => `  ${i + 1}. [${e.method}] ${e.url} → ${e.status} (${e.type})`);
+    const auth = entries.some(e => Object.keys(e.requestHeaders).some(h => /authorization|cookie/i.test(h)));
+    return `Session "${sessionId}": ${entries.length} total entries${filterType ? `, ${filtered.length} of type "${filterType}"` : ''}${auth ? ', auth present' : ''}\n${lines.join('\n')}${filtered.length > 30 ? `\n  ... and ${filtered.length - 30} more` : ''}`;
+  }, {
+    name: 'browser_get_trace',
+    description: 'Show captured network trace entries for a session. Optionally filter by type.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      filterType: z.enum(['navigation', 'xhr', 'fetch', 'form', 'resource', 'script']).optional().describe('Filter by request type'),
+    }),
+  });
+}
