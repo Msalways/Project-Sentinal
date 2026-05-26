@@ -311,8 +311,6 @@ project-sentinal/
 ├── tests/                 — 307 tests mirroring src/
 ├── templates/             — Sample Nuclei YAML templates
 ├── skills/                — 4 skill files with MITRE mappings
-├── Dockerfile
-├── .github/workflows/     — CI pipeline
 ├── README.md
 └── USAGE.md
 ```

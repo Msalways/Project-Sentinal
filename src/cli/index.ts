@@ -139,13 +139,14 @@ program
 Goal: navigate through every page, interact with forms, and discover all API endpoints so the app's flow model can be built automatically.
 
 Steps:
-1. Start browser_start_trace to begin capturing all network requests
-2. Navigate to ${opts.target} with browser_navigate
-3. Click every link you find, fill and submit forms with test data
-4. After thorough exploration, call browser_stop_trace
-5. Finally, call build_flow_from_trace to generate all artifacts
+1. Start browser_start_trace to capture all network requests
+2. Start browser_start_recording to capture user interactions for Playwright test generation
+3. Navigate to ${opts.target} with browser_navigate
+4. Click every link, fill and submit forms with test data
+5. After thorough exploration, call browser_stop_trace and browser_stop_recording
+6. Finally, call build_flow_from_trace to generate flow.yaml + flow.json + session.har + Playwright test files
 
-The network trace automatically captures every request including API calls, form submissions, auth headers, and payloads — no manual per-page recording needed.
+The network trace captures requests, payloads, auth headers automatically. The recording captures click/fill/navigate steps for Playwright code.
 
 Never use example.com — the target is ${opts.target}`,
     });

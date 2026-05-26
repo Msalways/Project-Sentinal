@@ -124,24 +124,7 @@ npm run build
 # Output: dist/index.cjs, dist/cli/index.js
 ```
 
-## 8. Docker
-
-```bash
-docker build -t ultimatrix .
-docker run --rm -e OPENAI_API_KEY=sk-... ultimatrix scan -t https://your-app.com
-```
-
-## 9. CI/CD Integration
-
-The `.github/workflows/ultimatrix-scan.yml` runs a headless security scan on every push:
-
-```yaml
-- name: Run Ultimatrix Scan
-  run: |
-    npx tsx src/cli/index.ts scan -t ${{ secrets.SCAN_TARGET }}
-```
-
-## 10. All Tests
+## 8. All Tests
 
 ```bash
 npx vitest run
@@ -164,4 +147,3 @@ npx vitest run
 | `npx tsx src/cli/index.ts agents` | List agent roles |
 | `npx vitest run` | Run all 307 tests |
 | `npm run build` | Build dist/ with tsup |
-| `docker build -t ultimatrix .` | Build container image |

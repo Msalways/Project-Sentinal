@@ -106,7 +106,7 @@ export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
     ].join('\n');
   }, {
     name: 'build_flow_from_trace',
-    description: 'Automatically build the app flow model from captured network trace. Start browser_start_trace, navigate the app, then browser_stop_trace and call this. Generates flow.yaml, flow.json, session.har, and Playwright tests automatically.',
+    description: 'Automatically build the app flow model from captured network trace + action recording. Start browser_start_trace + browser_start_recording, navigate, then browser_stop_trace + browser_stop_recording, then call this. Generates flow.yaml, flow.json, session.har, and Playwright .spec.ts tests.',
     schema: z.object({
       sessionId: z.string().default('default'),
       targetUrl: z.string().optional().describe('Base target URL (auto-detected from trace if omitted)'),
