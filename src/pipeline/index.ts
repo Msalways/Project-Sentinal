@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import type { SentinelConfig, ScanTarget, PipelineResult, Finding, TestResult, AgentName } from '../core/types';
+import type { UltimatrixConfig, ScanTarget, PipelineResult, Finding, TestResult, AgentName } from '../core/types';
 import { ScanEventEmitter } from '../core/types';
 import { HARParser } from '../tools/har-parser';
 import { ScenarioParser } from '../tools/scenario-parser';
@@ -8,7 +8,7 @@ import { correlateFindings, calculateRiskScore, riskLevelFromScore } from '../to
 import { toolRegistry } from '../tools/tool-registry';
 import { agentRegistry } from '../agents/agent-registry';
 import { providerRegistry } from '../providers/provider-registry';
-import { createSentinelAgent, parseFindingsFromOutput } from '../agents/deep-agent';
+import { createUltimatrixAgent, parseFindingsFromOutput } from '../agents/deep-agent';
 import { Viewport } from '../browser/viewport';
 import { buildTargetContext, getContextSummary, type TargetContext } from '../core/context';
 import { LLMAnalyzer } from '../tools/llm-analyzer';
@@ -16,10 +16,10 @@ import { enrichFindingsWithOWASP } from '../tools/owasp-mapper';
 import { enrichFindingsWithConfidence } from '../tools/confidence';
 
 export class Pipeline {
-  private config: SentinelConfig;
+  private config: UltimatrixConfig;
   public events: ScanEventEmitter;
 
-  constructor(config: SentinelConfig) {
+  constructor(config: UltimatrixConfig) {
     this.config = config;
     this.events = new ScanEventEmitter();
   }
@@ -104,7 +104,7 @@ export class Pipeline {
 
     this.events.pipelineStatus('Initializing security agents...', 30);
 
-    const agent = createSentinelAgent({
+    const agent = createUltimatrixAgent({
       model,
       allTools,
       allAgents,
@@ -249,7 +249,7 @@ Report each finding with severity, location, evidence, and remediation.`;
           const harContent = JSON.stringify({
             log: {
               version: '1.2',
-              creator: { name: 'Project Sentinel', version: '2.0.0' },
+              creator: { name: 'Ultimatrix', version: '2.0.0' },
               entries: entries.map((e) => ({
                 startedDateTime: new Date().toISOString(),
                 time: 0,
@@ -269,7 +269,7 @@ Report each finding with severity, location, evidence, and remediation.`;
           const harData = JSON.parse(harContent);
           const targetContext = buildTargetContext(harData, target);
 
-          const manifestPath = path.join(outputDir, 'sentinel.yaml');
+          const manifestPath = path.join(outputDir, 'ultimatrix.yaml');
           const manifestContent = this.manifestToContextYaml(targetContext, target);
           fs.writeFileSync(manifestPath, manifestContent);
 

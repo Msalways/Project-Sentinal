@@ -14,10 +14,10 @@ const log = new Logger();
 
 function hasAnyConfig(): boolean {
   const searchPaths = [
-    path.join(process.cwd(), 'sentinel.yaml'),
-    path.join(process.cwd(), 'sentinel.json'),
-    path.join(os.homedir(), '.config', 'sentinel', 'providers.yaml'),
-    path.join(os.homedir(), '.config', 'sentinel', 'config.yaml'),
+    path.join(process.cwd(), 'ultimatrix.yaml'),
+    path.join(process.cwd(), 'ultimatrix.json'),
+    path.join(os.homedir(), '.config', 'ultimatrix', 'providers.yaml'),
+    path.join(os.homedir(), '.config', 'ultimatrix', 'config.yaml'),
   ];
   for (const p of searchPaths) {
     if (fs.existsSync(p)) return true;
@@ -33,7 +33,7 @@ function hasAnyConfig(): boolean {
 const program = new Command();
 
 program
-  .name('sentinel')
+  .name('ultimatrix')
   .description('AI-powered security testing')
   .version('2.0.0');
 
@@ -41,12 +41,12 @@ program
 program
   .action(async () => {
     if (!hasAnyConfig()) {
-      log.warn('No provider configured. Run `sentinel init` or set env vars.');
+      log.warn('No provider configured. Run `ultimatrix init` or set env vars.');
       log.info('');
       log.info('Quick start:');
-      log.dim('  1. sentinel init          — interactive setup');
+      log.dim('  1. ultimatrix init          — interactive setup');
       log.dim('  2. set OPENAI_API_KEY     — or AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY');
-      log.dim('  3. sentinel scan -t <url> — run scan with env vars only');
+      log.dim('  3. ultimatrix scan -t <url> — run scan with env vars only');
       process.exit(0);
     }
 
@@ -78,13 +78,13 @@ program
   .option('--ci', 'CI/CD mode (exit code 1 on critical)')
   .action(async (opts) => {
     if (!hasAnyConfig() && !opts.provider && !process.env.OPENAI_API_KEY) {
-      log.error('No provider configured. Run `sentinel init` first.');
+      log.error('No provider configured. Run `ultimatrix init` first.');
       process.exit(1);
     }
 
     const config = await loadRuntimeConfig({ ...opts });
     if (!config.scan?.target && !opts.target) {
-      log.error('No target specified. Use -t <url> or set scan.target in sentinel.yaml');
+      log.error('No target specified. Use -t <url> or set scan.target in ultimatrix.yaml');
       process.exit(1);
     }
 
@@ -110,15 +110,15 @@ program
   .description('Run demo assessment (no API key needed)')
   .option('-o, --output <dir>', 'Output directory', './demo-output')
   .action(async (opts) => {
-    const { createSentinel } = await import('../index');
-    const sentinel = createSentinel({ provider: 'mock', apiKey: 'mock' });
-    const result = await sentinel.demo();
+    const { createUltimatrix } = await import('../index');
+    const ultimatrix = createUltimatrix({ provider: 'mock', apiKey: 'mock' });
+    const result = await ultimatrix.demo();
     log.success(`Risk: ${result.riskScore}/100 (${result.riskLevel.toUpperCase()})`);
     log.info(`Findings: ${result.findings.length}`);
     for (const f of result.findings) {
       log.dim(`  [${f.severity.toUpperCase()}] ${f.title}`);
     }
-    const reportPath = sentinel.generateReport(result, opts.output, 'html');
+    const reportPath = ultimatrix.generateReport(result, opts.output, 'html');
     log.info(`Report: ${reportPath}`);
   });
 
@@ -218,7 +218,7 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
   const config: any = { provider: {}, scan: {}, output: { dir: './output', format: 'html' } };
 
   // 1. Global config
-  const globalConfigPath = path.join(os.homedir(), '.config', 'sentinel', 'config.yaml');
+  const globalConfigPath = path.join(os.homedir(), '.config', 'ultimatrix', 'config.yaml');
   if (fs.existsSync(globalConfigPath)) {
     try {
       const yamlContent = fs.readFileSync(globalConfigPath, 'utf-8');
@@ -230,7 +230,7 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
   }
 
   // 2. Project config file
-  for (const p of [path.join(process.cwd(), 'sentinel.yaml'), path.join(process.cwd(), 'sentinel.json')]) {
+  for (const p of [path.join(process.cwd(), 'ultimatrix.yaml'), path.join(process.cwd(), 'ultimatrix.json')]) {
     if (fs.existsSync(p)) {
       try {
         const content = fs.readFileSync(p, 'utf-8');
@@ -257,7 +257,7 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
   }
 
   // 3. Providers file (secrets)
-  const providersPath = path.join(os.homedir(), '.config', 'sentinel', 'providers.yaml');
+  const providersPath = path.join(os.homedir(), '.config', 'ultimatrix', 'providers.yaml');
   if (fs.existsSync(providersPath)) {
     try {
       const parsed = yaml.load(fs.readFileSync(providersPath, 'utf-8')) as Record<string, any>;
@@ -329,7 +329,7 @@ async function loadModel(config: any) {
 }
 
 async function runInit() {
-  log.header('Sentinel Setup', '');
+  log.header('Ultimatrix Setup', '');
 
   const provider = await select({
     message: 'LLM Provider',
@@ -361,22 +361,22 @@ async function runInit() {
 
   const target = await input({ message: 'Default target URL (optional)' });
   const output = await input({ message: 'Output directory', default: './output' });
-  const saveSecrets = await confirm({ message: 'Save API keys to ~/.config/sentinel/providers.yaml?', default: true });
+  const saveSecrets = await confirm({ message: 'Save API keys to ~/.config$1ultimatrix$1providers.yaml?', default: true });
 
-  // Write sentinel.yaml (project config — no secrets or meta fields)
+  // Write ultimatrix.yaml (project config — no secrets or meta fields)
   const secretsFields = new Set(['apiKey', 'secretAccessKey', 'accessKeyId', 'auth']);
   const modelLine = providerConfig.name ? `  model: ${providerConfig.name}\n` : '';
   const extraLines = Object.entries(providerConfig)
     .filter(([k]) => !secretsFields.has(k) && k !== 'name')
     .map(([k, v]) => `  ${k}: ${v}\n`);
-  const sentinelYaml = `provider:\n  name: ${provider}\n${modelLine}${extraLines.join('')}scan:\n  target: ${target || ''}\noutput:\n  dir: ${output}\n  format: html\n`;
+  const ultimatrixYaml = `provider:\n  name: ${provider}\n${modelLine}${extraLines.join('')}scan:\n  target: ${target || ''}\noutput:\n  dir: ${output}\n  format: html\n`;
 
-  fs.writeFileSync(path.join(process.cwd(), 'sentinel.yaml'), sentinelYaml + '\n');
-  log.success('Saved sentinel.yaml');
+  fs.writeFileSync(path.join(process.cwd(), 'ultimatrix.yaml'), ultimatrixYaml + '\n');
+  log.success('Saved ultimatrix.yaml');
 
   // Write providers.yaml (secrets — gitignored)
   if (saveSecrets) {
-    const secretsDir = path.join(os.homedir(), '.config', 'sentinel');
+    const secretsDir = path.join(os.homedir(), '.config', 'ultimatrix');
     fs.mkdirSync(secretsDir, { recursive: true });
 
     let providersData: Record<string, any> = {};
@@ -395,14 +395,14 @@ async function runInit() {
     };
 
     fs.writeFileSync(existingPath, yaml.dump(providersData));
-    log.success('Saved API keys to ~/.config/sentinel/providers.yaml');
+    log.success('Saved API keys to ~/.config/ultimatrix/providers.yaml');
   } else {
     const envVar = providerEnvVar(provider);
-    log.warn(`Set ${envVar} env var before running sentinel`);
+    log.warn(`Set ${envVar} env var before running ultimatrix`);
   }
 
   log.divider();
-  log.success('Setup complete. Run \x1b[1msentinel\x1b[0m to start, or \x1b[1msentinel scan -t <url>\x1b[0m for autonomous scan');
+  log.success('Setup complete. Run \x1b[1multimatrix\x1b[0m to start, or \x1b[1multimatrix scan -t <url>\x1b[0m for autonomous scan');
 }
 
 function deepMerge(target: any, source: any): any {

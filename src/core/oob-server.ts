@@ -91,7 +91,7 @@ export class OOBServer {
 
   generatePayload(id: string, scheme: 'http' | 'https' | 'dns' = 'http'): string {
     if (scheme === 'dns') {
-      return `${id}.${this.hostIp.replace(/\./g, '-')}.oob.sentinel`;
+      return `${id}.${this.hostIp.replace(/\./g, '-')}.oob.ultimatrix`;
     }
     return `${scheme}://${this.hostIp}:${this.port}/oob/${id}`;
   }

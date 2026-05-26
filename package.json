@@ -6,7 +6,7 @@
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "sentinel": "./dist/cli/index.js"
+    "ultimatrix": "./dist/cli/index.js"
   },
   "files": [
     "dist/**/*"
@@ -33,7 +33,7 @@
     "red-team",
     "devsecops"
   ],
-  "author": "Project Sentinel Team",
+  "author": "Ultimatrix Team",
   "license": "MIT",
   "dependencies": {
     "@azure/openai": "^2.0.0",

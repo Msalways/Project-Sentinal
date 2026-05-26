@@ -11,7 +11,7 @@ export async function startRepl(config: {
   targetUrl: string;
   outputDir: string;
 }): Promise<void> {
-  log.header('Sentinel', config.targetUrl);
+  log.header('Ultimatrix', config.targetUrl);
   log.dim('---');
 
   const allTools = toolRegistry.getAll();

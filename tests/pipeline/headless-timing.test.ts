@@ -4,7 +4,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { Pipeline } from '../../src/pipeline/index';
-import { SentinelConfig } from '../../src/core/config';
+import { UltimatrixConfig } from '../../src/core/config';
 
 const TEST_PORT = 18999;
 const TEST_BASE = `http://localhost:${TEST_PORT}`;
@@ -77,7 +77,7 @@ afterAll(async () => {
 
 describe('Headless Pipeline Timing', () => {
   it('captures XHR and fetch requests within timing bound', async () => {
-    const config: SentinelConfig = {
+    const config: UltimatrixConfig = {
       provider: 'mock',
       apiKey: 'mock',
       modelId: 'mock',
@@ -107,7 +107,7 @@ describe('Headless Pipeline Timing', () => {
         ),
         fc.integer({ min: 1, max: 3 }),
         async (baseUrl, _timeoutMultiplier) => {
-          const config: SentinelConfig = {
+          const config: UltimatrixConfig = {
             provider: 'mock',
             apiKey: 'mock',
             modelId: 'mock',
@@ -139,7 +139,7 @@ describe('Headless Pipeline Timing', () => {
           `${TEST_BASE}/page1`,
         ),
         async (url) => {
-          const config: SentinelConfig = {
+          const config: UltimatrixConfig = {
             provider: 'mock',
             apiKey: 'mock',
             modelId: 'mock',

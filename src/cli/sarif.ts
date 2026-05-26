@@ -20,7 +20,7 @@ function severityToLevel(severity: string): 'error' | 'warning' | 'note' {
 }
 
 export function findingsToSarif(findings: Finding[], options: SarifOptions = {}): string {
-  const { toolName = 'Project Sentinel', artifactUri = '' } = options;
+  const { toolName = 'Ultimatrix', artifactUri = '' } = options;
 
   const sarif = {
     $schema: 'https://raw.githubusercontent.com/oasis-tcs/openc2-schema/main/sarif/sarif-2-1.json',
@@ -31,7 +31,7 @@ export function findingsToSarif(findings: Finding[], options: SarifOptions = {})
           driver: {
             name: toolName,
             version: '2.0.0',
-            informationUri: 'https://github.com/anomalyco/sentinel',
+            informationUri: 'https://github.com/anomalyco/ultimatrix',
           },
         },
         results: findings.map((finding) => ({

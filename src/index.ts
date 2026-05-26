@@ -1,4 +1,4 @@
-import type { SentinelConfig, ScanTarget } from './core/types';
+import type { UltimatrixConfig, ScanTarget } from './core/types';
 import { createConfig, loadFileConfig } from './core/config';
 import { Pipeline } from './pipeline';
 import { ReportGenerator } from './pipeline/report-generator';
@@ -11,10 +11,10 @@ import { LLMAnalyzer } from './tools/llm-analyzer';
 import { toolRegistry } from './tools/tool-registry';
 import { agentRegistry } from './agents/agent-registry';
 import { providerRegistry } from './providers/provider-registry';
-import { createSentinelAgent, parseFindingsFromOutput } from './agents/deep-agent';
+import { createUltimatrixAgent, parseFindingsFromOutput } from './agents/deep-agent';
 
-export interface SentinelOptions {
-  provider?: SentinelConfig['provider'];
+export interface UltimatrixOptions {
+  provider?: UltimatrixConfig['provider'];
   apiKey?: string;
   modelId?: string;
   azureEndpoint?: string;
@@ -23,11 +23,11 @@ export interface SentinelOptions {
   timeout?: number;
 }
 
-export class ProjectSentinel {
-  private config: SentinelConfig;
+export class Ultimatrix {
+  private config: UltimatrixConfig;
   public pipeline: Pipeline;
 
-  constructor(options: SentinelOptions = {}) {
+  constructor(options: UltimatrixOptions = {}) {
     this.config = createConfig(options);
     this.pipeline = new Pipeline(this.config);
   }
@@ -56,18 +56,18 @@ export class ProjectSentinel {
   }
 }
 
-export function createSentinel(options: SentinelOptions = {}): ProjectSentinel {
-  return new ProjectSentinel(options);
+export function createUltimatrix(options: UltimatrixOptions = {}): Ultimatrix {
+  return new Ultimatrix(options);
 }
 
 export { createConfig, loadFileConfig };
 export { Pipeline, ReportGenerator, Viewport, HARParser, ScenarioParser, PlaywrightTestGenerator, LLMTestGenerator, LLMAnalyzer };
 export { toolRegistry, agentRegistry, providerRegistry };
-export { createSentinelAgent, parseFindingsFromOutput };
+export { createUltimatrixAgent, parseFindingsFromOutput };
 export type {
   Severity, AgentName, LLMProviderName, TestStatus, PipelineStatus,
   Finding, TestResult, ScanTarget, AgentConfig, TeamConfig,
-  SentinelConfig, PipelineResult,
+  UltimatrixConfig, PipelineResult,
   HARRequest, HARResponse, HAREntry, HARLog, HARFile,
   DependencyNode, DependencyEdge, DependencyGraph,
   ScanEvent, ScanEventCallback, ScanEventEmitter, ScanEventType, OWASPCategory,

@@ -24,7 +24,7 @@ export class TestManager {
 
   constructor(outputDir: string) {
     this.outputDir = outputDir;
-    this.manifestPath = path.join(outputDir, '.sentinel-tests.json');
+    this.manifestPath = path.join(outputDir, '.ultimatrix-tests.json');
   }
 
   loadManifest(): TestManifest | null {

@@ -1,4 +1,4 @@
-# 🛡️ Project Sentinel
+# 🛡️ Ultimatrix
 
 **AI-Powered Security Team-in-a-Box** — A multi-agent security testing platform with 50+ built-in security tools, live browser control, skill-based expert guidance, and a dynamic sub-agent orchestrator that creates specialized agents on-the-fly.
 
@@ -18,7 +18,7 @@
 # 1. Install
 npm install
 
-# 2. Interactive setup (writes sentinel.yaml)
+# 2. Interactive setup (writes ultimatrix.yaml)
 npx tsx src/cli/index.ts init
 
 # 3. Run security scan
@@ -32,7 +32,7 @@ npx tsx src/cli/index.ts
 
 ## Modes of Operation
 
-### 🧠 Autonomous Scan (`sentinel scan`)
+### 🧠 Autonomous Scan (`ultimatrix scan`)
 A **goal-driven autonomous pentest** — a lead agent dynamically spawns specialized sub-agents with only the tools they need:
 
 ```bash
@@ -41,7 +41,7 @@ npx tsx src/cli/index.ts scan -t https://target.com -o ./output
 
 The lead agent analyzes the target, then spawns sub-agents on-the-fly (`recon-scanner`, `sql-injector`, `xss-checker`, etc.) — each with a precise tool subset. No fixed pipeline; the agent decides what to run, when, and with which tools.
 
-### 💬 Interactive REPL (`sentinel` with no args)
+### 💬 Interactive REPL (`ultimatrix` with no args)
 A **live chat loop** with the autonomous agent:
 
 ```bash
@@ -50,8 +50,8 @@ npx tsx src/cli/index.ts
 
 Commands: `/quit` to exit. All other input goes to the agent.
 
-### 🎯 Sentinel Init (`sentinel init`)
-Interactive wizard that writes `sentinel.yaml`:
+### 🎯 Ultimatrix Init (`ultimatrix init`)
+Interactive wizard that writes `ultimatrix.yaml`:
 
 ```bash
 npx tsx src/cli/index.ts init
@@ -209,20 +209,20 @@ load_skill(name="sql-injection")
 ┌──────────────────────────────────────────────────────────────────────┐
 │  CLI ENTRY POINTS                                                    │
 │  sentinel (no args) → gate check → REPL                              │
-│  sentinel init      → interactive wizard → writes sentinel.yaml       │
-│  sentinel scan -t   → AutonomousOrchestrator → live streaming        │
-│  sentinel demo      → mock assessment (no API key needed)             │
-│  sentinel providers → list LLM providers                              │
-│  sentinel tools     → list security tools                             │
-│  sentinel agents    → list agent roles                                │
+│  ultimatrix init      → interactive wizard → writes ultimatrix.yaml       │
+│  ultimatrix scan -t   → AutonomousOrchestrator → live streaming        │
+│  ultimatrix demo      → mock assessment (no API key needed)             │
+│  ultimatrix providers → list LLM providers                              │
+│  ultimatrix tools     → list security tools                             │
+│  ultimatrix agents    → list agent roles                                │
 └──────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  CONFIG LAYERING                                                     │
-│  ~/.config/sentinel/providers.yaml  (secrets, API keys)               │
-│    >  ~/.config/sentinel/config.yaml (global defaults)                │
-│      >  ./sentinel.yaml / ./sentinel.json (project config)            │
+│  ~/.config$1ultimatrix$1providers.yaml  (secrets, API keys)               │
+│    >  ~/.config$1ultimatrix$1config.yaml (global defaults)                │
+│      >  ./ultimatrix.yaml / ./ultimatrix.json (project config)            │
 │        >  env vars (SENTINEL_PROVIDER, OPENAI_API_KEY, ...)           │
 │          >  CLI flags (-t, --provider, --model)                       │
 └──────────────────────────────────────────────────────────────────────┘
@@ -283,7 +283,7 @@ project-sentinal/
 
 ```bash
 # Interactive
-sentinel init
+ultimatrix init
 
 # Or set env vars
 export SENTINEL_PROVIDER=openai

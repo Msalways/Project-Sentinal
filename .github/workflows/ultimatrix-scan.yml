@@ -1,4 +1,4 @@
-name: Sentinel Security Scan
+name: Ultimatrix Security Scan
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Run Sentinel Scan
+      - name: Run Ultimatrix Scan
         run: |
           node dist/cli/index.js run \
             -t ${{ github.event.inputs.target }} \
@@ -79,7 +79,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: scan-results/
-          category: sentinel
+          category: ultimatrix
         continue-on-error: true
 
   docker:
@@ -87,6 +87,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image
-        run: docker build -t sentinel .
+        run: docker build -t ultimatrix .
       - name: Test Docker image
-        run: docker run --rm sentinel --help
+        run: docker run --rm ultimatrix --help

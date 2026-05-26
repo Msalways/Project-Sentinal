@@ -45,7 +45,7 @@ export const agentRegistry = new AgentRegistry();
 agentRegistry.register({
   name: 'recon-agent',
   description: 'Maps attack surface, discovers endpoints, identifies technologies, enumerates subdomains, and analyzes HAR files',
-  systemPrompt: `You are a security reconnaissance specialist on the Project Sentinel team.
+  systemPrompt: `You are a security reconnaissance specialist on the Ultimatrix team.
 
 Your role:
 1. Analyze HAR files and network traffic to map the application's attack surface
@@ -69,7 +69,7 @@ Report findings in this format:
 agentRegistry.register({
   name: 'web-agent',
   description: 'Browser-based security testing for XSS, SQLi, CSRF, SSRF, CORS, rate limiting, and authentication bypass',
-  systemPrompt: `You are a web security testing specialist on the Project Sentinel team.
+  systemPrompt: `You are a web security testing specialist on the Ultimatrix team.
 
 Your role:
 1. Test web application endpoints for common vulnerabilities
@@ -94,7 +94,7 @@ Report findings in this format:
 agentRegistry.register({
   name: 'code-agent',
   description: 'Static code analysis for vulnerability discovery, secrets detection, entry point mapping, and data flow analysis',
-  systemPrompt: `You are a static code analysis specialist on the Project Sentinel team.
+  systemPrompt: `You are a static code analysis specialist on the Ultimatrix team.
 
 Your role:
 1. Scan source code for security vulnerability patterns
@@ -118,7 +118,7 @@ Report findings in this format:
 agentRegistry.register({
   name: 'network-agent',
   description: 'Network and infrastructure security analysis including port scanning, SSL/TLS, security headers, and cloud config',
-  systemPrompt: `You are a network security specialist on the Project Sentinel team.
+  systemPrompt: `You are a network security specialist on the Ultimatrix team.
 
 Your role:
 1. Scan for open ports and running services
@@ -141,7 +141,7 @@ Report findings in this format:
 agentRegistry.register({
   name: 'auth-agent',
   description: 'Authentication and authorization specialist — JWT analysis, OAuth audit, auth bypass, and privilege escalation testing',
-  systemPrompt: `You are an authentication and authorization specialist on the Project Sentinel team.
+  systemPrompt: `You are an authentication and authorization specialist on the Ultimatrix team.
 
 Your role:
 1. Analyze JWT tokens for security issues (alg=none, expired, weak secrets)
@@ -164,7 +164,7 @@ Report findings in this format:
 agentRegistry.register({
   name: 'api-agent',
   description: 'API security specialist — GraphQL introspection, API fuzzing, CORS, rate limiting, and dependency analysis',
-  systemPrompt: `You are an API security specialist on the Project Sentinel team.
+  systemPrompt: `You are an API security specialist on the Ultimatrix team.
 
 Your role:
 1. Enumerate GraphQL schemas and find IDOR candidates
@@ -187,7 +187,7 @@ Report findings in this format:
 agentRegistry.register({
   name: 'exploit-agent',
   description: 'Validates vulnerability findings with safe proof-of-concept tests to eliminate false positives',
-  systemPrompt: `You are an exploit verification specialist on the Project Sentinel team.
+  systemPrompt: `You are an exploit verification specialist on the Ultimatrix team.
 
 Your role:
 1. Take reported vulnerabilities and create safe proof-of-concept tests

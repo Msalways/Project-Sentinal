@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import type { LLMProviderName, SentinelConfig, AgentName } from './types';
+import type { LLMProviderName, UltimatrixConfig, AgentName } from './types';
 
 const DEFAULT_MODEL_IDS: Record<LLMProviderName, string> = {
   'azure-openai': 'gpt-4o',
@@ -17,13 +17,13 @@ const DEFAULT_MODEL_IDS: Record<LLMProviderName, string> = {
   mock: 'mock',
 };
 
-const DEFAULT_AGENTS: SentinelConfig['agents'] = {
+const DEFAULT_AGENTS: UltimatrixConfig['agents'] = {
   agents: [],
   terminationPrompt: '',
   maxRounds: 3,
 };
 
-export interface SentinelFileConfig {
+export interface UltimatrixFileConfig {
   provider?: LLMProviderName;
   model?: string;
   target?: string;
@@ -53,12 +53,12 @@ function resolveApiKey(provider: LLMProviderName): string {
   return envKeys[provider];
 }
 
-export function loadFileConfig(configPath?: string): SentinelFileConfig {
+export function loadFileConfig(configPath?: string): UltimatrixFileConfig {
   const searchPaths = [
     configPath,
-    path.join(process.cwd(), 'sentinel.json'),
-    path.join(process.cwd(), 'sentinel.yaml'),
-    path.join(process.cwd(), '.sentinel.json'),
+    path.join(process.cwd(), 'ultimatrix.json'),
+    path.join(process.cwd(), 'ultimatrix.yaml'),
+    path.join(process.cwd(), '.ultimatrix.json'),
   ].filter(Boolean) as string[];
 
   for (const p of searchPaths) {
@@ -66,14 +66,14 @@ export function loadFileConfig(configPath?: string): SentinelFileConfig {
       try {
         const content = fs.readFileSync(p, 'utf-8');
         if (p.endsWith('.json')) return JSON.parse(content);
-        if (p.endsWith('.yaml') || p.endsWith('.yml')) return yaml.load(content) as SentinelFileConfig;
+        if (p.endsWith('.yaml') || p.endsWith('.yml')) return yaml.load(content) as UltimatrixFileConfig;
       } catch { /* skip invalid files */ }
     }
   }
   return {};
 }
 
-export function createConfig(overrides: Partial<SentinelConfig> = {}, fileConfig: SentinelFileConfig = {}): SentinelConfig {
+export function createConfig(overrides: Partial<UltimatrixConfig> = {}, fileConfig: UltimatrixFileConfig = {}): UltimatrixConfig {
   const provider = (overrides.provider || fileConfig.provider || process.env.SENTINEL_PROVIDER || 'openai') as LLMProviderName;
   const apiKey = overrides.apiKey || resolveApiKey(provider);
   const modelId = overrides.modelId || fileConfig.model || DEFAULT_MODEL_IDS[provider];
@@ -93,7 +93,7 @@ export function createConfig(overrides: Partial<SentinelConfig> = {}, fileConfig
   };
 }
 
-export function getAgentConfig(config: SentinelConfig, name: AgentName) {
+export function getAgentConfig(config: UltimatrixConfig, name: AgentName) {
   return config.agents.agents.find((a) => a.name === name);
 }
 

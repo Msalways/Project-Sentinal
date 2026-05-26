@@ -1,4 +1,4 @@
-# Project Sentinel — Usage Guide
+# Ultimatrix — Usage Guide
 
 ## Prerequisites
 
@@ -24,7 +24,7 @@ Prompts for:
 - Default target URL (optional)
 - Output directory
 
-Writes `sentinel.yaml` in the current directory and `~/.config/sentinel/providers.yaml` for secrets.
+Writes `ultimatrix.yaml` in the current directory and `~/.config$1ultimatrix$1providers.yaml` for secrets.
 
 ## 2. Run Security Scan
 
@@ -35,7 +35,7 @@ npx tsx src/cli/index.ts scan -t https://your-app.com
 # Specify output directory
 npx tsx src/cli/index.ts -t https://your-app.com -o ./results
 
-# Using env vars only (no sentinel.yaml)
+# Using env vars only (no ultimatrix.yaml)
 SENTINEL_PROVIDER=openai OPENAI_API_KEY=sk-... npx tsx src/cli/index.ts scan -t https://your-app.com
 ```
 
@@ -98,16 +98,16 @@ npm run build
 ## 7. Docker
 
 ```bash
-docker build -t sentinel .
-docker run --rm -e OPENAI_API_KEY=sk-... sentinel scan -t https://your-app.com
+docker build -t ultimatrix .
+docker run --rm -e OPENAI_API_KEY=sk-... ultimatrix scan -t https://your-app.com
 ```
 
 ## 8. CI/CD Integration
 
-The `.github/workflows/sentinel-scan.yml` runs a headless security scan on every push:
+The `.github/workflows/ultimatrix-scan.yml` runs a headless security scan on every push:
 
 ```yaml
-- name: Run Sentinel Scan
+- name: Run Ultimatrix Scan
   run: |
     npx tsx src/cli/index.ts scan -t ${{ secrets.SCAN_TARGET }}
 ```
@@ -132,4 +132,4 @@ npx vitest run
 | `npx tsx src/cli/index.ts agents` | List agent roles |
 | `npx vitest run` | Run all 307 tests |
 | `npm run build` | Build dist/ with tsup |
-| `docker build -t sentinel .` | Build container image |
+| `docker build -t ultimatrix .` | Build container image |

@@ -151,7 +151,7 @@ export interface TeamConfig {
   maxRounds: number;
 }
 
-export interface SentinelConfig {
+export interface UltimatrixConfig {
   provider: LLMProviderName;
   apiKey: string;
   modelId: string;

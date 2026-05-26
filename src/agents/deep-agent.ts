@@ -5,7 +5,7 @@ import type { AgentName, Finding, Severity } from '../core/types';
 import { toolRegistry } from '../tools/tool-registry';
 import { agentRegistry } from '../agents/agent-registry';
 
-export interface SentinelAgentConfig {
+export interface UltimatrixAgentConfig {
   model: BaseChatModel;
   allTools: Tool[];
   allAgents?: typeof agentRegistry.getAll extends () => infer T ? T : any[];
@@ -13,7 +13,7 @@ export interface SentinelAgentConfig {
   agentNames?: string[];
 }
 
-export function createSentinelAgent(config: SentinelAgentConfig): ReturnType<typeof createDeepAgent> {
+export function createUltimatrixAgent(config: UltimatrixAgentConfig): ReturnType<typeof createDeepAgent> {
   const agentNames = config.agentNames || agentRegistry.listNames();
   const allAgents = config.allAgents || agentRegistry.getAll();
 
@@ -41,7 +41,7 @@ export function createSentinelAgent(config: SentinelAgentConfig): ReturnType<typ
     model: config.model,
     tools: config.allTools,
     subagents,
-    systemPrompt: `You are Project Sentinel, an autonomous AI security team lead.
+    systemPrompt: `You are Ultimatrix, an autonomous AI security team lead.
 
 ${contextSection}You coordinate a team of specialized security agents to perform comprehensive security assessments.
 
