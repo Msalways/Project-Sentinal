@@ -15,6 +15,11 @@ export interface ProviderConfig {
   azureApiVersion?: string;
   temperature?: number;
   maxTokens?: number;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  region?: string;
+  baseURL?: string;
+  organizationId?: string;
 }
 
 export class ProviderRegistry {
@@ -120,6 +125,118 @@ providerRegistry.register({
       model: config.modelId,
       temperature: config.temperature ?? 0.3,
       maxTokens: config.maxTokens ?? 4096,
+    });
+  },
+});
+
+// ── AWS Bedrock ──
+
+providerRegistry.register({
+  name: 'bedrock',
+  label: 'AWS Bedrock',
+  envVars: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'],
+  create: (config) => {
+    const { ChatBedrockConverse } = require('@langchain/aws');
+    return new ChatBedrockConverse({
+      region: config.region || process.env.AWS_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: config.accessKeyId || process.env.AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: config.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY || '',
+      },
+      model: config.modelId || 'anthropic.claude-sonnet-4-v2',
+      temperature: config.temperature ?? 0.3,
+      maxTokens: config.maxTokens ?? 4096,
+    });
+  },
+});
+
+// ── Google Gemini ──
+
+providerRegistry.register({
+  name: 'gemini',
+  label: 'Google Gemini',
+  envVars: ['GEMINI_API_KEY'],
+  create: (config) => {
+    const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+    return new ChatGoogleGenerativeAI({
+      apiKey: config.apiKey,
+      model: config.modelId || 'gemini-2.0-flash',
+      temperature: config.temperature ?? 0.3,
+      maxTokens: config.maxTokens ?? 4096,
+    });
+  },
+});
+
+// ── Groq ──
+
+providerRegistry.register({
+  name: 'groq',
+  label: 'Groq',
+  envVars: ['GROQ_API_KEY'],
+  create: (config) => {
+    const { ChatGroq } = require('@langchain/groq');
+    return new ChatGroq({
+      apiKey: config.apiKey,
+      model: config.modelId || 'llama-3.3-70b-versatile',
+      temperature: config.temperature ?? 0.3,
+      maxTokens: config.maxTokens ?? 4096,
+    });
+  },
+});
+
+// ── Together AI (via OpenAI-compatible API) ──
+
+providerRegistry.register({
+  name: 'together',
+  label: 'Together AI',
+  envVars: ['TOGETHER_API_KEY'],
+  create: (config) => {
+    const { ChatOpenAI } = require('@langchain/openai');
+    return new ChatOpenAI({
+      apiKey: config.apiKey,
+      model: config.modelId || 'mistralai/Mixtral-8x22B-Instruct-v0.1',
+      temperature: config.temperature ?? 0.3,
+      maxTokens: config.maxTokens ?? 4096,
+      configuration: {
+        baseURL: 'https://api.together.xyz/v1',
+      },
+    });
+  },
+});
+
+// ── Mistral AI ──
+
+providerRegistry.register({
+  name: 'mistral',
+  label: 'Mistral AI',
+  envVars: ['MISTRAL_API_KEY'],
+  create: (config) => {
+    const { ChatMistralAI } = require('@langchain/mistralai');
+    return new ChatMistralAI({
+      apiKey: config.apiKey,
+      model: config.modelId || 'mistral-large-latest',
+      temperature: config.temperature ?? 0.3,
+      maxTokens: config.maxTokens ?? 4096,
+    });
+  },
+});
+
+// ── NVIDIA NIM (OpenAI-compatible API) ──
+
+providerRegistry.register({
+  name: 'nvidia',
+  label: 'NVIDIA NIM',
+  envVars: ['NVIDIA_API_KEY'],
+  create: (config) => {
+    const { ChatOpenAI } = require('@langchain/openai');
+    return new ChatOpenAI({
+      apiKey: config.apiKey,
+      model: config.modelId || 'meta/llama-3.1-70b-instruct',
+      temperature: config.temperature ?? 0.3,
+      maxTokens: config.maxTokens ?? 4096,
+      configuration: {
+        baseURL: config.baseURL || 'https://integrate.api.nvidia.com/v1',
+      },
     });
   },
 });

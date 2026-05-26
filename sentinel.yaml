@@ -1,0 +1,10 @@
+provider:
+  name: nvidia
+  model: qwen/qwen3-coder-480b-a35b-instruct
+  baseURL: https://integrate.api.nvidia.com/v1
+scan:
+  target: 
+output:
+  dir: ./output
+  format: html
+

@@ -8,7 +8,7 @@ export type AgentName =
   | 'exploit'
   | 'report';
 
-export type LLMProviderName = 'azure-openai' | 'openai' | 'openrouter' | 'anthropic' | 'mock';
+export type LLMProviderName = 'openai' | 'azure-openai' | 'openrouter' | 'anthropic' | 'bedrock' | 'gemini' | 'groq' | 'together' | 'mistral' | 'nvidia' | 'mock';
 
 export type TestStatus = 'passed' | 'failed' | 'skipped' | 'error';
 
