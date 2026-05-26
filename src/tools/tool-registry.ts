@@ -1,6 +1,18 @@
 import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 
+import { createHttpFuzzTool } from './http-fuzz';
+import { createTemplateScanTool } from './template-scan';
+import { createTrivyTool } from './trivy-scan';
+import { createSemgrepTool } from './semgrep-scan';
+import { createSessionCheckTool, createLoginMacroTool } from './auth-scan';
+import { createFileExfilTool, createReverseShellTool, createCredDumpTool } from './post-exploit';
+import { createOOBTriggerTool } from './oob-trigger';
+import { createOOBFindTool } from './oob-find';
+import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool } from './browser-tools';
+import { OOBServer } from '../core/oob-server';
+import { BrowserSessionManager } from '../core/browser-session';
+
 type AnyTool = DynamicStructuredTool;
 
 export interface ToolRegistryEntry {
@@ -978,6 +990,172 @@ toolRegistry.register({
       return `SSL/TLS Check for ${url}:\n\nHTTPS: ${url.startsWith('https://') ? '✅ Yes' : '❌ No'}\nTLS Version: ${tlsVersion}\nHSTS: ${headers['strict-transport-security'] || '❌ Missing'}\n\nIssues:\n${issues.length > 0 ? issues.map((i) => `- ${i}`).join('\n') : 'No obvious SSL/TLS issues'}`;
     } catch (error) { return `Error: ${error instanceof Error ? error.message : String(error)}`; }
   }, { name: 'ssl_check', description: 'Check SSL/TLS configuration', schema: SslCheckSchema }),
+});
+
+// ── HTTP Fuzzing Tool ──
+
+toolRegistry.register({
+  name: 'http_fuzz',
+  category: 'exploit',
+  description: 'Fuzz HTTP endpoints with payload wordlists using FUZZ placeholder in URL, headers, or body',
+  tags: ['fuzzing', 'http', 'exploit', 'wordlist'],
+  factory: () => createHttpFuzzTool(),
+});
+
+// ── Template Scanning Tool ──
+
+toolRegistry.register({
+  name: 'template_scan',
+  category: 'recon',
+  description: 'Execute Nuclei-compatible YAML templates against a target URL for vulnerability detection',
+  tags: ['template', 'nuclei', 'scanning', 'automation'],
+  factory: () => createTemplateScanTool(),
+});
+
+// ── Container & Cloud Scanning Tools ──
+
+toolRegistry.register({
+  name: 'trivy_scan',
+  category: 'cloud',
+  description: 'Scan container images, filesystems, Kubernetes, or SBOMs for vulnerabilities using Trivy',
+  tags: ['trivy', 'container', 'kubernetes', 'vulnerability', 'cloud'],
+  factory: () => createTrivyTool(),
+});
+
+toolRegistry.register({
+  name: 'semgrep_scan',
+  category: 'code',
+  description: 'Scan source code for security vulnerabilities using Semgrep SAST rules',
+  tags: ['semgrep', 'sast', 'code', 'static-analysis'],
+  factory: () => createSemgrepTool(),
+});
+
+// ── Browser Control Tools ──
+
+toolRegistry.register({
+  name: 'browser_navigate',
+  category: 'browser',
+  description: 'Navigate a browser session to a URL',
+  tags: ['browser', 'playwright', 'navigation'],
+  factory: () => createBrowserNavigateTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_click',
+  category: 'browser',
+  description: 'Click an element identified by CSS selector in a browser session',
+  tags: ['browser', 'playwright', 'dom', 'interaction'],
+  factory: () => createBrowserClickTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_fill',
+  category: 'browser',
+  description: 'Fill a form field with a value in a browser session',
+  tags: ['browser', 'playwright', 'form', 'input'],
+  factory: () => createBrowserFillTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_screenshot',
+  category: 'browser',
+  description: 'Take a screenshot of the current page in a browser session (returns base64 PNG)',
+  tags: ['browser', 'playwright', 'screenshot', 'visual'],
+  factory: () => createBrowserScreenshotTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_extract',
+  category: 'browser',
+  description: 'Extract content from the current page in a browser session (text, html, or links)',
+  tags: ['browser', 'playwright', 'dom', 'extraction'],
+  factory: () => createBrowserExtractTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_evaluate',
+  category: 'browser',
+  description: 'Execute JavaScript in the browser session page context',
+  tags: ['browser', 'playwright', 'javascript', 'evaluation'],
+  factory: () => createBrowserEvaluateTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_close',
+  category: 'browser',
+  description: 'Close a browser session and release all resources',
+  tags: ['browser', 'playwright', 'session', 'cleanup'],
+  factory: () => createBrowserCloseTool(),
+});
+
+// ── Authenticated Scanning Tools ──
+
+toolRegistry.register({
+  name: 'browser_record_login',
+  category: 'auth',
+  description: 'Record and replay a login macro through the browser for authenticated scanning sessions',
+  tags: ['auth', 'login', 'macro', 'session', 'browser'],
+  factory: () => {
+    const { BrowserSessionManager: BSM } = { BrowserSessionManager };
+    const mac = createLoginMacroTool(new BSM());
+    return mac;
+  },
+});
+
+toolRegistry.register({
+  name: 'check_auth_session',
+  category: 'auth',
+  description: 'Check if an authentication session (cookie or header) is valid against a target URL',
+  tags: ['auth', 'session', 'check', 'validation'],
+  factory: () => createSessionCheckTool(),
+});
+
+// ── Post-Exploitation Tools ──
+
+toolRegistry.register({
+  name: 'exfiltrate_file',
+  category: 'exploit',
+  description: 'Generate commands to exfiltrate files from a compromised target via shell, SQL, or LFI',
+  tags: ['exploit', 'exfil', 'post-exploitation', 'data'],
+  factory: () => createFileExfilTool(),
+});
+
+toolRegistry.register({
+  name: 'reverse_shell',
+  category: 'exploit',
+  description: 'Generate reverse shell payload commands for various shell types (bash, python, nc, powershell)',
+  tags: ['exploit', 'reverse-shell', 'rce', 'payload'],
+  factory: () => createReverseShellTool(),
+});
+
+toolRegistry.register({
+  name: 'dump_credentials',
+  category: 'exploit',
+  description: 'Generate credential dumping commands for Unix, Windows, web apps, and databases',
+  tags: ['exploit', 'credentials', 'dump', 'post-exploitation'],
+  factory: () => createCredDumpTool(),
+});
+
+// ── OOB Detection Tools ──
+
+toolRegistry.register({
+  name: 'oob_trigger',
+  category: 'exploit',
+  description: 'Generate OOB (Out-of-Band) payloads for blind SSRF, XXE, SQLi via callback server',
+  tags: ['oob', 'blind', 'ssrf', 'xxe', 'sqli', 'callback'],
+  factory: () => {
+    const server = new OOBServer();
+    server.start().catch(() => {});
+    return createOOBTriggerTool(server);
+  },
+});
+
+toolRegistry.register({
+  name: 'oob_find',
+  category: 'exploit',
+  description: 'Check OOB callback server for incoming callbacks to confirm blind SSRF, XXE, or SQLi',
+  tags: ['oob', 'blind', 'callback', 'detection', 'verification'],
+  factory: () => createOOBFindTool(new OOBServer()),
 });
 
 // ── Helpers ──

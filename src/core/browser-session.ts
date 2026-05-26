@@ -1,5 +1,23 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 
+export interface MacroStep {
+  type: 'navigate' | 'click' | 'fill' | 'wait' | 'extract' | 'screenshot' | 'evaluate';
+  selector?: string;
+  value?: string;
+  url?: string;
+  script?: string;
+  waitMs?: number;
+}
+
+export interface MacroResult {
+  success: boolean;
+  stepResults: { step: number; type: string; ok: boolean; error?: string }[];
+  finalUrl?: string;
+  extractedData?: Record<string, string>;
+  screenshots?: string[];
+  duration: number;
+}
+
 interface SessionState {
   browser: Browser;
   context: BrowserContext;
@@ -109,5 +127,85 @@ export class BrowserSessionManager {
 
   listSessions(): string[] {
     return Array.from(this.sessions.keys());
+  }
+
+  async replayMacro(sessionId: string, steps: MacroStep[]): Promise<MacroResult> {
+    const startTime = Date.now();
+    const stepResults: MacroResult['stepResults'] = [];
+    let anyFailed = false;
+    const extractedData: Record<string, string> = {};
+    const screenshots: string[] = [];
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      try {
+        switch (step.type) {
+          case 'navigate': {
+            if (!step.url) throw new Error('navigate step requires url');
+            const url = await this.navigate(sessionId, step.url);
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          case 'click': {
+            if (!step.selector) throw new Error('click step requires selector');
+            await this.click(sessionId, step.selector);
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          case 'fill': {
+            if (!step.selector || step.value === undefined) throw new Error('fill step requires selector and value');
+            await this.fill(sessionId, step.selector, step.value);
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          case 'wait': {
+            const ms = step.waitMs ?? 1000;
+            await new Promise((resolve) => setTimeout(resolve, ms));
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          case 'extract': {
+            const text = await this.extractText(sessionId);
+            const key = step.value || `extract_${i}`;
+            extractedData[key] = text;
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          case 'screenshot': {
+            const base64 = await this.screenshot(sessionId);
+            screenshots.push(base64);
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          case 'evaluate': {
+            if (!step.script) throw new Error('evaluate step requires script');
+            await this.evaluate(sessionId, step.script);
+            stepResults.push({ step: i, type: step.type, ok: true });
+            break;
+          }
+          default:
+            stepResults.push({ step: i, type: step.type, ok: false, error: `Unknown step type: ${step.type}` });
+            anyFailed = true;
+        }
+      } catch (err) {
+        anyFailed = true;
+        stepResults.push({ step: i, type: step.type, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    let finalUrl: string | undefined;
+    try {
+      const page = await this.getOrCreate(sessionId);
+      finalUrl = page.url();
+    } catch { /* ignore */ }
+
+    return {
+      success: !anyFailed,
+      stepResults,
+      finalUrl,
+      extractedData: Object.keys(extractedData).length > 0 ? extractedData : undefined,
+      screenshots: screenshots.length > 0 ? screenshots : undefined,
+      duration: Date.now() - startTime,
+    };
   }
 }
