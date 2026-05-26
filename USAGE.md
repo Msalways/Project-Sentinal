@@ -73,17 +73,19 @@ npx tsx src/cli/index.ts map -t https://your-app.com -o ./flow-output
    - `session.har` — full HAR file of all captured traffic
    - `tests/*.spec.ts` — Playwright test files from recorded interactions
 
-### With Git Registry (diff tracking across releases):
+### Change Detection (automatic):
 
-```bash
-# First release — creates the baseline
-npx tsx src/cli/index.ts map -t https://your-app.com --flow-repo https://github.com/team/app-flow.git
+Each `map` run auto-saves to `~/.ultimatrix/registry/<app>/`. On subsequent runs, it diffs against the previous model and reports:
 
-# Next release — pulls baseline, diffs, focuses on what changed
-npx tsx src/cli/index.ts scan -t https://your-app.com --flow ./flow-output
+```
++ new page: /api/v2/orders
+- removed: /legacy/checkout
+~ /checkout: auth changed: none → required
++ new API: POST /api/v2/orders
+↳ impacted: /cart → /api/v2/orders
 ```
 
-The git registry stores the flow model across releases. The scan command can then diff against the previous model to find what changed.
+No flags needed — the registry is automatic and local.
 
 ## 4. Interactive REPL
 
@@ -139,7 +141,7 @@ npx vitest run
 | `npx tsx src/cli/index.ts init` | Interactive setup wizard |
 | `npx tsx src/cli/index.ts scan -t <url>` | Autonomous security scan |
 | `npx tsx src/cli/index.ts map -t <url>` | App flow mapping with network trace |
-| `npx tsx src/cli/index.ts map -t <url> --flow-repo <git-url>` | Map + commit to git registry |
+| `npx tsx src/cli/index.ts map -t <url>` | Map + auto-save to local registry |
 | `npx tsx src/cli/index.ts test -s <session>` | Generate Playwright tests from recording |
 | `npx tsx src/cli/index.ts demo` | Demo with mock findings |
 | `npx tsx src/cli/index.ts tools` | List all security tools |

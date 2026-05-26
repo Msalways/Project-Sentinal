@@ -51,24 +51,21 @@ npx tsx src/cli/index.ts
 Commands: `/quit` to exit. All other input goes to the agent.
 
 ### 🗺️ App Flow Mapping (`ultimatrix map`)
-**Automatic application flow discovery** — explores the app via live browser, silently captures every network request, and generates a complete flow model:
+**Automatic application flow discovery** — explores the app via live browser, silently captures every network request, and generates a complete flow model with change detection:
 
 ```bash
 npx tsx src/cli/index.ts map -t https://target.com -o ./flow-output
 ```
 
 How it works:
-1. Agent starts `browser_start_trace` → Playwright intercepts all requests/responses silently
-2. Agent naturally navigates, clicks, fills forms — the trace captures URLs, methods, request bodies, auth headers (Bearer/Cookie/Basic), response statuses
-3. Agent calls `build_flow_from_trace` → automatically generates:
+1. Agent starts `browser_start_trace` + `browser_start_recording`
+2. Agent navigates, clicks, fills forms — trace captures all requests, payloads, auth headers
+3. Agent calls `build_flow_from_trace` → generates:
    - `flow.yaml` / `flow.json` — pages, forms, API endpoints, auth model
    - `session.har` — full HAR file of all captured traffic
    - `tests/*.spec.ts` — Playwright test files from recorded actions
-
-```bash
-# With git registry for diff-based scanning across releases
-npx tsx src/cli/index.ts map -t https://target.com --flow-repo https://github.com/team/app-flow.git
-```
+4. Results saved to `~/.ultimatrix/registry/<app>/` automatically
+5. On subsequent runs, diffs against previous model and reports: new pages, removed pages, changed forms/endpoints, and **impacted flows** (which pages link to changed routes)
 
 ### 🎯 Ultimatrix Init (`ultimatrix init`)
 Interactive wizard that writes `ultimatrix.yaml`:

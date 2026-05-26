@@ -125,10 +125,10 @@ program
     const model = await loadModel(config);
 
     const { createDeepAgent } = await import('deepagents');
-    const { toolRegistry: registry } = await import('../tools/tool-registry');
+    const { toolRegistry: toolReg } = await import('../tools/tool-registry');
 
-    const allTools: DynamicStructuredTool[] = registry.getByCategory('browser') as DynamicStructuredTool[];
-    const traceTool = registry.get('build_flow_from_trace');
+    const allTools: DynamicStructuredTool[] = toolReg.getByCategory('browser') as DynamicStructuredTool[];
+    const traceTool = toolReg.get('build_flow_from_trace');
     if (traceTool) allTools.push(traceTool);
 
     const agent = createDeepAgent({
@@ -180,12 +180,38 @@ Never use example.com — the target is ${opts.target}`,
 
     log.divider();
 
-    const { FlowRegistry } = await import('../flow/git-registry');
-    if (opts.flowRepo) {
-      const registry = new FlowRegistry({ repoUrl: opts.flowRepo, localPath: path.join(opts.output, '.flow-registry') });
-      const committed = registry.commit(opts.output, `Flow map for ${opts.target}`);
-      if (committed) log.success(`Flow artifacts committed to git registry: ${opts.flowRepo}`);
-      else log.info('No changes since last commit');
+    const { LocalRegistry } = await import('../flow/local-registry');
+    const registry = new LocalRegistry(opts.target);
+    const artifacts = fs.readdirSync(path.join(opts.output));
+    for (const file of artifacts) {
+      const src = path.join(opts.output, file);
+      const dst = path.join(registry.path, file);
+      if (fs.statSync(src).isDirectory()) {
+        const children = fs.readdirSync(src);
+        fs.mkdirSync(dst, { recursive: true });
+        for (const child of children) fs.copyFileSync(path.join(src, child), path.join(dst, child));
+      } else {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(src, dst);
+      }
+    }
+
+    const previous = registry.loadPrevious();
+    if (previous) {
+      const diff = registry.diff(previous);
+      if (diff.hasChanges) {
+        log.info('Changes from previous scan:');
+        for (const p of diff.addedPages) log.dim(`  + new page: ${p}`);
+        for (const p of diff.removedPages) log.dim(`  - removed: ${p}`);
+        for (const p of diff.changedPages) {
+          log.dim(`  ~ ${p.path}:`);
+          for (const c of p.changes) log.dim(`      ${c}`);
+        }
+        for (const a of diff.addedApis) log.dim(`  + new API: ${a}`);
+        for (const f of diff.impactedFlows) log.dim(`  ↳ impacted: ${f}`);
+      } else {
+        log.info('No changes detected from previous scan.');
+      }
     }
 
     log.header('Mapping Complete', `Artifacts in ${opts.output}`);
