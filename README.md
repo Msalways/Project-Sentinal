@@ -2,7 +2,7 @@
 
 **AI-Powered Security Team-in-a-Box** — A multi-agent security testing platform with 60+ built-in security tools, live browser control, skill-based expert guidance, automatic app flow mapping via network tracing, and a dynamic sub-agent orchestrator that creates specialized agents on-the-fly.
 
-> Built for **Microsoft Build AI Hackathon 2026** | Track: Security in the Agentic Future
+> ⚠️ **Under active development.** Not yet published. API and behavior may change without notice.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
