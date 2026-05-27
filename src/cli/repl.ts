@@ -3,6 +3,7 @@ import { createDeepAgent } from 'deepagents';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { toolRegistry } from '../tools/tool-registry';
 import { Logger, colors } from './logger';
+import { fixWriteTodosMiddleware } from '../core/fix-todos';
 
 const log = new Logger();
 
@@ -29,6 +30,7 @@ Rules:
   const agent = createDeepAgent({
     model: config.model,
     tools: allTools,
+    middleware: [fixWriteTodosMiddleware],
     systemPrompt,
   });
 

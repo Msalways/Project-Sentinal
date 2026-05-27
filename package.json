@@ -1,5 +1,5 @@
 {
-  "name": "project-sentinal",
+  "name": "ultimatrix",
   "version": "2.0.0",
   "description": "AI-powered security team-in-a-box. Multi-agent security testing platform with AutoGen-style orchestration.",
   "main": "dist/index.cjs",
@@ -51,7 +51,7 @@
     "commander": "^12.0.0",
     "deepagents": "^1.10.2",
     "js-yaml": "^4.1.1",
-    "langchain": "^1.4.1",
+    "langchain": "^1.4.2",
     "openai": "^4.28.0",
     "playwright": "^1.40.0",
     "zod": "^3.22.0"

@@ -2,17 +2,23 @@ import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import fs from 'fs';
 import path from 'path';
-import { BrowserSessionManager, type TraceEntry, type MacroStep } from '../core/browser-session';
+import { type TraceEntry, type MacroStep } from '../core/browser-session';
+import { getSharedBrowserManager } from '../tools/browser-tools';
 import type { AppFlowModel, AppPage, AppApi, AuthModel, PageForm, FormField } from './flow-model';
 
-let _browserManager: BrowserSessionManager | null = null;
-function getBrowserManager(): BrowserSessionManager {
-  if (!_browserManager) _browserManager = new BrowserSessionManager(false);
-  return _browserManager;
+function getBrowserManager() { return getSharedBrowserManager(); }
+
+/** Parent directory of a pathname — `/users/1` → `/users`, `/users` → `/` */
+function parentPath(pathname: string): string {
+  const segs = pathname.split('/').filter(Boolean);
+  if (segs.length <= 1) return '/';
+  return '/' + segs.slice(0, -1).join('/');
 }
 
 function safeName(pathname: string): string {
-  return pathname.replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'root';
+  const segs = pathname.split('/').filter(Boolean);
+  const name = segs.length > 0 ? segs[segs.length - 1] : 'root';
+  return name.replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'root';
 }
 
 function groupStepsByPage(steps: MacroStep[]): Array<{ page: string; steps: MacroStep[] }> {
@@ -22,7 +28,7 @@ function groupStepsByPage(steps: MacroStep[]): Array<{ page: string; steps: Macr
   for (const step of steps) {
     if (step.type === 'navigate' && step.url) {
       if (currentGroup.length > 0) groups.push({ page: currentPage, steps: currentGroup });
-      try { currentPage = new URL(step.url).pathname; } catch { currentPage = '/'; }
+      try { currentPage = parentPath(new URL(step.url).pathname); } catch { currentPage = '/'; }
       currentGroup = [step];
     } else { currentGroup.push(step); }
   }
@@ -33,7 +39,10 @@ function groupStepsByPage(steps: MacroStep[]): Array<{ page: string; steps: Macr
 export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
   return tool(async (input) => {
     const { sessionId, targetUrl, appName, outputDir } = input;
-    const trace = getBrowserManager().getTrace(sessionId);
+    const mgr = getBrowserManager();
+    // Auto-stop trace if still running (LLM often forgets)
+    try { mgr.stopTrace(sessionId); } catch { /* ok */ }
+    const trace = mgr.getTrace(sessionId);
     if (trace.length === 0) return 'No trace data found. Start browser_start_trace before navigating, then call this after browser_stop_trace.';
 
     const target = targetUrl || extractBaseUrl(trace) || 'http://localhost:3000';
@@ -63,7 +72,10 @@ export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
     const harPath = path.join(out, 'session.har');
     fs.writeFileSync(harPath, traceToHar(trace)); artifacts.push(harPath);
 
-    const testSteps = getBrowserManager().getRecording(sessionId);
+    let testSteps = mgr.getRecording(sessionId);
+    if (testSteps.length === 0) {
+      try { testSteps = mgr.stopRecording(sessionId); } catch { /* ok */ }
+    }
     if (testSteps.length > 0) {
       const { PlaywrightTestGenerator } = await import('../tools/test-generator');
       const testDir = path.join(out, 'tests');
@@ -73,9 +85,9 @@ export function createBuildFlowFromTraceTool(): DynamicStructuredTool {
         name: safeName(g.page),
         test: { happy: g.steps.map(s => {
           switch (s.type) {
-            case 'navigate': return `Navigate to ${s.url}`;
-            case 'click': return `Click ${s.selector}`;
-            case 'fill': return `Fill ${s.selector} with "${s.value}"`;
+            case 'navigate': return `NAV|${s.url}`;
+            case 'click': return `CLI|${s.selector}`;
+            case 'fill': return `FIL|${s.selector}|${s.value}`;
             default: return `${s.type}`;
           }
         }), sad: [] },
@@ -126,11 +138,11 @@ function buildPages(trace: TraceEntry[], baseUrl: string): AppPage[] {
     try {
       const u = new URL(entry.url);
       if (!urlMatches(u, baseUrl)) continue;
-      const pathname = u.pathname;
+      const page = parentPath(u.pathname);
 
-      if (!pageMap.has(pathname)) {
-        pageMap.set(pathname, {
-          path: pathname,
+      if (!pageMap.has(page)) {
+        pageMap.set(page, {
+          path: page,
           title: '',
           type: 'page',
           auth: 'public',
@@ -143,8 +155,8 @@ function buildPages(trace: TraceEntry[], baseUrl: string): AppPage[] {
     } catch {}
   }
 
-  const navOrder = trace.filter(e => e.type === 'navigation').map(e => {
-    try { return new URL(e.url).pathname; } catch { return ''; }
+  const navOrder: string[] = trace.filter(e => e.type === 'navigation').map(e => {
+    try { return parentPath(new URL(e.url).pathname); } catch { return ''; }
   }).filter(Boolean);
 
   for (let i = 1; i < navOrder.length; i++) {
@@ -304,7 +316,7 @@ function toYaml(model: AppFlowModel): string {
   return lines.join('\n');
 }
 
-function traceToHar(trace: TraceEntry[]): string {
+export function traceToHar(trace: TraceEntry[]): string {
   const entries = trace.map((e, i) => ({
     startedDateTime: new Date(Date.now() - (trace.length - i) * 500).toISOString(),
     time: Math.max(e.duration, 1),

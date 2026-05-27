@@ -8,7 +8,7 @@ export function createTemplateScanTool(): DynamicStructuredTool {
     name: 'template_scan',
     description: 'Execute Nuclei-compatible YAML templates against a target URL for vulnerability detection',
     schema: z.object({
-      target: z.string().describe('Target URL to scan (e.g. https://example.com)'),
+      target: z.string().describe('Target URL to scan'),
       templateId: z.string().optional().describe('Specific template ID to execute'),
       severity: z.enum(['info', 'low', 'medium', 'high', 'critical']).optional().describe('Filter by minimum severity'),
       timeout: z.number().optional().default(60).describe('Timeout per request in seconds'),

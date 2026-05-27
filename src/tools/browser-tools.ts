@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import { BrowserSessionManager } from '../core/browser-session';
+import { u } from './tool-registry';
 
 let _browserManager: BrowserSessionManager | null = null;
-function getBrowserManager(): BrowserSessionManager {
-  if (!_browserManager) _browserManager = new BrowserSessionManager(false);
+export function getSharedBrowserManager(headless?: boolean): BrowserSessionManager {
+  if (!_browserManager) _browserManager = new BrowserSessionManager(headless ?? false);
   return _browserManager;
+}
+function getBrowserManager(): BrowserSessionManager {
+  return getSharedBrowserManager();
 }
 
 const SessionIdSchema = z.object({
@@ -14,7 +18,10 @@ const SessionIdSchema = z.object({
 
 export function createBrowserNavigateTool(): DynamicStructuredTool {
   return tool(async (input) => {
-    const { sessionId, url } = input;
+    const { sessionId, url } = z.object({
+      sessionId: z.string().default('default'),
+      url: z.string(),
+    }).parse(u(input));
     const finalUrl = await getBrowserManager().navigate(sessionId, url);
     return `Navigated to ${finalUrl}`;
   }, {
@@ -54,6 +61,21 @@ export function createBrowserFillTool(): DynamicStructuredTool {
       sessionId: z.string().default('default'),
       selector: z.string().describe('CSS selector for the input element'),
       value: z.string().describe('Value to fill into the field'),
+    }),
+  });
+}
+
+export function createBrowserPressKeyTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, key } = input;
+    const result = await getBrowserManager().pressKey(sessionId, key);
+    return result;
+  }, {
+    name: 'browser_press_key',
+    description: 'Press a keyboard key in the browser session (e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+a"). Use this after browser_fill to submit forms.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      key: z.string().describe('Key to press (e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+a")'),
     }),
   });
 }
@@ -161,7 +183,7 @@ export function createBrowserGetRecordingTool(): DynamicStructuredTool {
 export function createBrowserStartTraceTool(): DynamicStructuredTool {
   return tool(async (input) => {
     const { sessionId } = input;
-    const result = getBrowserManager().startTrace(sessionId);
+    const result = await getBrowserManager().startTrace(sessionId);
     return result;
   }, {
     name: 'browser_start_trace',

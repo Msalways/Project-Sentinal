@@ -60,20 +60,45 @@ export class BrowserSessionManager {
       }
     }
 
-    const browser = await chromium.launch({ headless: this.headless });
+    const browser = await chromium.launch({
+      headless: this.headless,
+      args: [
+        '--no-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-automation',
+        '--disable-dev-shm-usage',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-popup-blocking',
+      ],
+    });
     const context = await browser.newContext({
       viewport: { width: 1280, height: 720 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      locale: 'en-US',
+      timezoneId: 'America/New_York',
+      geolocation: { latitude: 40.7128, longitude: -74.006 },
+      permissions: ['geolocation'],
     });
     const page = await context.newPage();
+    // Hide automation fingerprints from Cloudflare/detection scripts
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      // @ts-expect-error - chrome runtime override
+      window.chrome = { runtime: {} };
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    });
 
     this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false });
     return page;
   }
 
-  startTrace(sessionId: string): string {
-    const state = this.sessions.get(sessionId);
-    if (!state) return `No session "${sessionId}". Create one first with navigate.`;
+  async startTrace(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const state = this.sessions.get(sessionId)!;
     if (state.tracing) return `Tracing already active for session "${sessionId}".`;
 
     state.tracing = true;
@@ -153,25 +178,89 @@ export class BrowserSessionManager {
 
   async navigate(sessionId: string, url: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     this.record(sessionId, { type: 'navigate', url });
     return page.url();
   }
 
   async click(sessionId: string, selector: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
-    await page.waitForSelector(selector, { timeout: 10000 });
-    await page.click(selector);
-    this.record(sessionId, { type: 'click', selector });
-    return `Clicked: ${selector}`;
+    try {
+      await page.waitForSelector(selector, { timeout: 10000 });
+      try {
+        await page.click(selector, { force: true, timeout: 5000 });
+      } catch {
+        await page.evaluate((sel) => {
+          const el = document.querySelector(sel) as HTMLElement;
+          if (el) el.click();
+        }, selector);
+      }
+      this.record(sessionId, { type: 'click', selector });
+      return `Clicked: ${selector}`;
+    } catch {
+      // CSS selector failed — try matching by link text or href
+      const clicked = await page.evaluate((text) => {
+        const links = Array.from(document.querySelectorAll('a'));
+        const match = links.find(l => l.textContent?.trim() === text || l.href === text);
+        if (match) { (match as HTMLElement).click(); return match.href; }
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const bMatch = buttons.find(b => b.textContent?.trim() === text);
+        if (bMatch) { (bMatch as HTMLElement).click(); return bMatch.textContent || ''; }
+        return null;
+      }, selector);
+      if (clicked) {
+        this.record(sessionId, { type: 'click', selector });
+        return `Clicked by text match: "${selector}" → ${clicked}`;
+      }
+      return `Could not find element matching "${selector}"`;
+    }
   }
 
   async fill(sessionId: string, selector: string, value: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
-    await page.waitForSelector(selector, { timeout: 10000 });
-    await page.fill(selector, value);
+    try {
+      await page.waitForSelector(selector, { timeout: 5000 });
+      await page.fill(selector, value, { force: true });
+    } catch {
+      const ok = await page.evaluate(([sel, val]) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return false;
+        if ((el as HTMLTextAreaElement | HTMLInputElement | null)?.value !== undefined) {
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype, 'value'
+          )?.set || Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+          )?.set;
+          if (nativeInputValueSetter) {
+            nativeInputValueSetter.call(el, val);
+          } else {
+            (el as HTMLTextAreaElement).value = val;
+          }
+        } else if (el.isContentEditable) {
+          el.textContent = '';
+          document.execCommand('insertText', false, val);
+        } else {
+          return false;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }, [selector, value]);
+      if (!ok) return `Could not find element matching "${selector}"`;
+    }
     this.record(sessionId, { type: 'fill', selector, value });
     return `Filled: ${selector}`;
+  }
+
+  async getCurrentUrl(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    return page.url();
+  }
+
+  async pressKey(sessionId: string, key: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    await page.keyboard.press(key);
+    return `Pressed: ${key}`;
   }
 
   async screenshot(sessionId: string, fullPage = false): Promise<string> {
@@ -188,21 +277,24 @@ export class BrowserSessionManager {
   async extractHtml(sessionId: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
     try {
-      return await page.evaluate(() => document.documentElement?.outerHTML || '');
+      const html = await page.evaluate(() => document.documentElement?.outerHTML || '');
+      return html.length > 10000 ? html.slice(0, 10000) + '\n... (truncated)' : html;
     } catch {
-      return await page.content();
+      const html = await page.content();
+      return html.length > 10000 ? html.slice(0, 10000) + '\n... (truncated)' : html;
     }
   }
 
   async extractLinks(sessionId: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
-    const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
+    const links: Array<{ href: string; rawHref: string; text: string }> = await page.evaluate(() =>
       Array.from(document.querySelectorAll('a[href]')).map((a) => ({
         href: (a as HTMLAnchorElement).href,
+        rawHref: (a as HTMLAnchorElement).getAttribute('href') || '',
         text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 80),
       }))
     );
-    return links.map((l) => `${l.href} (${l.text})`).join('\n');
+    return links.map((l) => `${l.href} (${l.text})\n  selector: a[href="${l.rawHref}"]`).join('\n');
   }
 
   async evaluate(sessionId: string, script: string): Promise<string> {

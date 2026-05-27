@@ -1,6 +1,17 @@
 import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 
+// Normalizes common LLM parameter name mistakes for URL fields
+// LLMs often guess "param", "target", "targetUrl" instead of "url"
+export function u(input: Record<string, unknown>): Record<string, unknown> {
+  if (input.url) return input;
+  if (typeof input.target === 'string' && input.target) return { ...input, url: input.target };
+  if (typeof input.targetUrl === 'string' && input.targetUrl) return { ...input, url: input.targetUrl };
+  if (typeof input.target_url === 'string' && input.target_url) return { ...input, url: input.target_url };
+  if (typeof input.endpoint === 'string' && input.endpoint) return { ...input, url: input.endpoint };
+  return input;
+}
+
 import { createHttpFuzzTool } from './http-fuzz';
 import { createTemplateScanTool } from './template-scan';
 import { createTrivyTool } from './trivy-scan';
@@ -9,7 +20,7 @@ import { createSessionCheckTool, createLoginMacroTool } from './auth-scan';
 import { createFileExfilTool, createReverseShellTool, createCredDumpTool } from './post-exploit';
 import { createOOBTriggerTool } from './oob-trigger';
 import { createOOBFindTool } from './oob-find';
-import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool } from './browser-tools';
+import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool } from './browser-tools';
 import { createGeneratePlaywrightTestTool } from './test-gen-tool';
 import { createBuildFlowFromTraceTool } from '../flow/build-from-trace';
 import { OOBServer } from '../core/oob-server';
@@ -77,11 +88,11 @@ export const toolRegistry = new ToolRegistry();
 // ── HTTP & Network Tools ──
 
 const HttpRequestSchema = z.object({
-  method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']),
-  url: z.string(),
-  headers: z.record(z.string()).optional(),
-  body: z.record(z.unknown()).optional(),
-  followRedirects: z.boolean().optional().default(true),
+  method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']).optional().default('GET').describe('HTTP method (default: GET)'),
+  url: z.string().describe('Target URL to send the request to'),
+  headers: z.record(z.string()).optional().describe('Optional HTTP headers as key-value pairs'),
+  body: z.record(z.unknown()).optional().describe('Optional request body as JSON object'),
+  followRedirects: z.boolean().optional().default(true).describe('Whether to follow HTTP redirects'),
 });
 
 toolRegistry.register({
@@ -90,7 +101,7 @@ toolRegistry.register({
   description: 'Send an HTTP request to a target URL with custom method, headers, and body',
   tags: ['http', 'api', 'request'],
   factory: () => tool(async (input) => {
-    const { method, url, headers, body, followRedirects } = HttpRequestSchema.parse(input);
+    const { method, url, headers, body, followRedirects } = HttpRequestSchema.parse(u(input));
     try {
       const response = await fetch(url, { method, headers: headers || {}, body: body ? JSON.stringify(body) : undefined, redirect: followRedirects !== false ? 'follow' : 'manual' });
       const responseHeaders: Record<string, string> = {};
@@ -103,9 +114,9 @@ toolRegistry.register({
 });
 
 const PortScanSchema = z.object({
-  host: z.string(),
-  ports: z.array(z.number()).optional(),
-  range: z.string().optional(),
+  host: z.string().describe('Hostname or IP address to scan'),
+  ports: z.array(z.number()).optional().describe('Specific ports to scan (overrides range)'),
+  range: z.string().optional().describe('Port range like "1-1024"'),
 });
 
 toolRegistry.register({
@@ -133,7 +144,10 @@ toolRegistry.register({
   }, { name: 'port_scan', description: 'Scan a host for open ports', schema: PortScanSchema }),
 });
 
-const HeaderAnalyzeSchema = z.object({ url: z.string() });
+const HeaderAnalyzeSchema = z.object({
+  url: z.string().describe('Target URL to analyze headers for'),
+  target: z.string().optional().describe('Alias for url'),
+}).transform(v => ({ url: v.url || v.target || '' }));
 
 toolRegistry.register({
   name: 'header_analyze',
@@ -141,7 +155,7 @@ toolRegistry.register({
   description: 'Analyze HTTP security headers for misconfigurations',
   tags: ['http', 'headers', 'security'],
   factory: () => tool(async (input) => {
-    const { url } = HeaderAnalyzeSchema.parse(input);
+    const { url } = HeaderAnalyzeSchema.parse(u(input));
     try {
       const response = await fetch(url);
       const headers: Record<string, string> = {};
@@ -162,7 +176,10 @@ toolRegistry.register({
 
 // ── Reconnaissance Tools ──
 
-const TechDetectSchema = z.object({ url: z.string() });
+const TechDetectSchema = z.object({
+  url: z.string().describe('Target URL to detect technologies on'),
+  target: z.string().optional().describe('Alias for url'),
+}).transform(v => ({ url: v.url || v.target || '' }));
 
 toolRegistry.register({
   name: 'tech_detect',
@@ -170,7 +187,7 @@ toolRegistry.register({
   description: 'Detect technologies, frameworks, and servers used by a website',
   tags: ['recon', 'technology', 'frameworks'],
   factory: () => tool(async (input) => {
-    const { url } = TechDetectSchema.parse(input);
+    const { url } = TechDetectSchema.parse(u(input));
     try {
       const response = await fetch(url);
       const headers: Record<string, string> = {};
@@ -195,8 +212,8 @@ toolRegistry.register({
 // ── Code Analysis Tools ──
 
 const PatternMatchSchema = z.object({
-  path: z.string(),
-  patterns: z.array(z.object({ name: z.string(), regex: z.string(), severity: z.enum(['critical', 'high', 'medium', 'low']) })).optional(),
+  path: z.string().describe('File system path to scan'),
+  patterns: z.array(z.object({ name: z.string().describe('Pattern name'), regex: z.string().describe('RegExp source'), severity: z.enum(['critical', 'high', 'medium', 'low']).describe('Severity level') })).optional().describe('Custom patterns to scan for'),
 });
 
 toolRegistry.register({
@@ -242,7 +259,7 @@ toolRegistry.register({
 
 // ── HAR Analysis Tools ──
 
-const HarAnalyzeSchema = z.object({ harPath: z.string() });
+const HarAnalyzeSchema = z.object({ harPath: z.string().describe('File path to the HAR file') });
 
 toolRegistry.register({
   name: 'har_analyze',
@@ -270,7 +287,7 @@ toolRegistry.register({
 
 // ── JWT Tools ──
 
-const JwtParseSchema = z.object({ token: z.string() });
+const JwtParseSchema = z.object({ token: z.string().describe('JWT token string to decode and analyze') });
 
 toolRegistry.register({
   name: 'jwt_parse',
@@ -305,9 +322,9 @@ toolRegistry.register({
   tags: ['jwt', 'auth', 'forgery', 'testing'],
   factory: () => tool(async (input) => {
     const { header, payload, algorithm } = z.object({
-      header: z.record(z.unknown()).optional().default({ alg: 'none', typ: 'JWT' }),
-      payload: z.record(z.unknown()),
-      algorithm: z.enum(['none', 'HS256']).optional().default('none'),
+      header: z.record(z.unknown()).optional().default({ alg: 'none', typ: 'JWT' }).describe('JWT header claims'),
+      payload: z.record(z.unknown()).describe('JWT payload claims as key-value pairs'),
+      algorithm: z.enum(['none', 'HS256']).optional().default('none').describe('Forgery algorithm'),
     }).parse(input);
     try {
       const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
@@ -316,12 +333,12 @@ toolRegistry.register({
       const forgedToken = `${encodedHeader}.${encodedPayload}.${signature}`;
       return `Forged JWT (alg=${algorithm}):\n${forgedToken}\n\nHeader: ${JSON.stringify(header, null, 2)}\nPayload: ${JSON.stringify(payload, null, 2)}\n\nUse this token in Authorization header to test for JWT validation bypass.`;
     } catch (error) { return `Error forging JWT: ${error instanceof Error ? error.message : String(error)}`; }
-  }, { name: 'jwt_forge', description: 'Forge JWT tokens for security testing', schema: z.object({ header: z.record(z.unknown()).optional(), payload: z.record(z.unknown()), algorithm: z.enum(['none', 'HS256']).optional() }) }),
+  }, { name: 'jwt_forge', description: 'Forge JWT tokens for security testing', schema: z.object({ header: z.record(z.unknown()).optional().describe('JWT header claims'), payload: z.record(z.unknown()).describe('JWT payload claims'), algorithm: z.enum(['none', 'HS256']).optional().describe('Forgery algorithm') }) }),
 });
 
 // ── API & GraphQL Tools ──
 
-const GraphqlIntrospectSchema = z.object({ url: z.string(), headers: z.record(z.string()).optional() });
+const GraphqlIntrospectSchema = z.object({ url: z.string().describe('GraphQL endpoint URL'), headers: z.record(z.string()).optional().describe('Optional HTTP headers for the introspection query') });
 
 toolRegistry.register({
   name: 'graphql_introspect',
@@ -329,7 +346,7 @@ toolRegistry.register({
   description: 'Query GraphQL introspection to enumerate types, queries, mutations, and find IDOR candidates',
   tags: ['graphql', 'api', 'introspection', 'recon'],
   factory: () => tool(async (input) => {
-    const { url, headers } = GraphqlIntrospectSchema.parse(input);
+    const { url, headers } = GraphqlIntrospectSchema.parse(u(input));
     const introspectionQuery = `query { __schema { types { name fields { name args { name type { name kind ofType { name kind } } } type { name kind ofType { name kind } } } } queryType { name } mutationType { name } } }`;
     try {
       const response = await fetch(url, {
@@ -359,7 +376,9 @@ toolRegistry.register({
   description: 'Audit OAuth/OIDC callback URLs for missing state, nonce, PKCE, and implicit flow',
   tags: ['oauth', 'oidc', 'auth', 'audit'],
   factory: () => tool(async (input) => {
-    const { url } = z.object({ url: z.string() }).parse(input);
+    const { url } = z.object({
+      url: z.string().describe('Target URL containing OAuth/OIDC flows'),
+    }).parse(u(input));
     try {
       const response = await fetch(url);
       const html = await response.text();
@@ -373,10 +392,13 @@ toolRegistry.register({
       }
       return issues.length > 0 ? `OAuth/OIDC Issues Found:\n${issues.map((i) => `- ${i}`).join('\n')}` : `No OAuth/OIDC flows detected in ${url}`;
     } catch (error) { return `Error: ${error instanceof Error ? error.message : String(error)}`; }
-  }, { name: 'oauth_audit', description: 'Audit OAuth/OIDC callback URLs', schema: z.object({ url: z.string() }) }),
+  }, { name: 'oauth_audit', description: 'Audit OAuth/OIDC callback URLs', schema: z.object({ url: z.string().describe('Target URL containing OAuth/OIDC flows') }) }),
 });
 
-const CorsAuditSchema = z.object({ url: z.string() });
+const CorsAuditSchema = z.object({
+  url: z.string().describe('Target URL to test CORS on'),
+  target: z.string().optional().describe('Alias for url'),
+}).transform(v => ({ url: v.url || v.target || '' }));
 
 toolRegistry.register({
   name: 'cors_audit',
@@ -384,7 +406,7 @@ toolRegistry.register({
   description: 'Test CORS configuration for misconfigurations (wildcard origins, credentials, exposed headers)',
   tags: ['cors', 'api', 'headers', 'misconfiguration'],
   factory: () => tool(async (input) => {
-    const { url } = CorsAuditSchema.parse(input);
+    const { url } = CorsAuditSchema.parse(u(input));
     try {
       const response = await fetch(url, { headers: { Origin: 'https://evil.com' } });
       const acao = response.headers.get('access-control-allow-origin');
@@ -402,7 +424,7 @@ toolRegistry.register({
   }, { name: 'cors_audit', description: 'Test CORS configuration', schema: CorsAuditSchema }),
 });
 
-const RateLimitTestSchema = z.object({ url: z.string(), method: z.string().optional().default('POST'), attempts: z.number().optional().default(10) });
+const RateLimitTestSchema = z.object({ url: z.string().describe('Target endpoint URL'), method: z.string().optional().default('POST').describe('HTTP method'), attempts: z.number().optional().default(10).describe('Number of rapid requests to send') });
 
 toolRegistry.register({
   name: 'rate_limit_test',
@@ -410,7 +432,7 @@ toolRegistry.register({
   description: 'Test API endpoints for rate limiting by sending rapid requests',
   tags: ['rate-limit', 'api', 'brute-force', 'testing'],
   factory: () => tool(async (input) => {
-    const { url, method, attempts } = RateLimitTestSchema.parse(input);
+    const { url, method, attempts } = RateLimitTestSchema.parse(u(input));
     const results: Array<{ status: number; time: number; headers: Record<string, string> }> = [];
     for (let i = 0; i < attempts; i++) {
       const start = Date.now();
@@ -428,7 +450,7 @@ toolRegistry.register({
   }, { name: 'rate_limit_test', description: 'Test API rate limiting', schema: RateLimitTestSchema }),
 });
 
-const ApiFuzzSchema = z.object({ url: z.string(), method: z.string().optional().default('POST'), params: z.array(z.string()) });
+const ApiFuzzSchema = z.object({ url: z.string().describe('Target API endpoint URL'), method: z.string().optional().default('POST').describe('HTTP method'), params: z.array(z.string()).describe('Parameter names to fuzz') });
 
 toolRegistry.register({
   name: 'api_fuzz',
@@ -436,7 +458,7 @@ toolRegistry.register({
   description: 'Fuzz API parameters for mass assignment, type confusion, and unexpected behavior',
   tags: ['api', 'fuzzing', 'mass-assignment', 'testing'],
   factory: () => tool(async (input) => {
-    const { url, method, params } = ApiFuzzSchema.parse(input);
+    const { url, method, params } = ApiFuzzSchema.parse(u(input));
     const fuzzPayloads: Record<string, unknown>[] = [
       { isAdmin: true },
       { role: 'admin', isAdmin: true, is_admin: true },
@@ -459,7 +481,7 @@ toolRegistry.register({
 
 // ── Cloud & Infrastructure Tools ──
 
-const IamAuditSchema = z.object({ policy: z.string() });
+const IamAuditSchema = z.object({ policy: z.string().describe('AWS IAM policy JSON string to audit') });
 
 toolRegistry.register({
   name: 'iam_policy_audit',
@@ -491,7 +513,7 @@ toolRegistry.register({
   }, { name: 'iam_policy_audit', description: 'Audit AWS IAM policy JSON', schema: IamAuditSchema }),
 });
 
-const K8sAuditSchema = z.object({ manifest: z.string() });
+const K8sAuditSchema = z.object({ manifest: z.string().describe('Kubernetes manifest YAML/JSON string to audit') });
 
 toolRegistry.register({
   name: 'k8s_manifest_audit',
@@ -523,7 +545,7 @@ toolRegistry.register({
   }, { name: 'k8s_manifest_audit', description: 'Audit Kubernetes manifests', schema: K8sAuditSchema }),
 });
 
-const TfAuditSchema = z.object({ path: z.string() });
+const TfAuditSchema = z.object({ path: z.string().describe('File path to the Terraform state file') });
 
 toolRegistry.register({
   name: 'tfstate_audit',
@@ -559,7 +581,7 @@ toolRegistry.register({
 
 // ── Vulnerability Intelligence Tools ──
 
-const CveLookupSchema = z.object({ cveId: z.string() });
+const CveLookupSchema = z.object({ cveId: z.string().describe('CVE identifier like CVE-2024-12345') });
 
 toolRegistry.register({
   name: 'cve_lookup',
@@ -585,7 +607,7 @@ toolRegistry.register({
   }, { name: 'cve_lookup', description: 'Look up CVE details from NVD', schema: CveLookupSchema }),
 });
 
-const DepEnrichSchema = z.object({ path: z.string() });
+const DepEnrichSchema = z.object({ path: z.string().describe('File path to lockfile (package-lock.json, requirements.txt, go.sum)') });
 
 toolRegistry.register({
   name: 'dependency_enrich',
@@ -621,7 +643,7 @@ toolRegistry.register({
 
 // ── Code Analysis Tools ──
 
-const EntryPointSchema = z.object({ path: z.string() });
+const EntryPointSchema = z.object({ path: z.string().describe('File system path to scan for entry points') });
 
 toolRegistry.register({
   name: 'entry_point_detect',
@@ -664,7 +686,7 @@ toolRegistry.register({
   }, { name: 'entry_point_detect', description: 'Identify application entry points', schema: EntryPointSchema }),
 });
 
-const SourceSinkSchema = z.object({ path: z.string() });
+const SourceSinkSchema = z.object({ path: z.string().describe('File system path to scan for sources and sinks') });
 
 toolRegistry.register({
   name: 'source_sink_scan',
@@ -709,7 +731,7 @@ toolRegistry.register({
   }, { name: 'source_sink_scan', description: 'Scan for data flow sources and sinks', schema: SourceSinkSchema }),
 });
 
-const ReachabilitySchema = z.object({ path: z.string(), entryPoint: z.string(), sink: z.string() });
+const ReachabilitySchema = z.object({ path: z.string().describe('File system path to scan'), entryPoint: z.string().describe('Function name of the entry point'), sink: z.string().describe('Function name of the vulnerable sink') });
 
 toolRegistry.register({
   name: 'reachability_analyze',
@@ -748,14 +770,14 @@ toolRegistry.register({
   description: 'LLM-driven false positive elimination — verify if a reported vulnerability is actually exploitable',
   tags: ['verification', 'false-positive', 'llm', 'analysis'],
   factory: () => tool(async (input) => {
-    const { finding, codeSnippet } = z.object({ finding: z.string(), codeSnippet: z.string() }).parse(input);
+    const { finding, codeSnippet } = z.object({ finding: z.string().describe('Description of the vulnerability finding to verify'), codeSnippet: z.string().describe('Relevant source code snippet showing the finding') }).parse(input);
     return `Verification analysis for: ${finding}\n\nCode: ${codeSnippet.slice(0, 500)}\n\nAnalysis:\n1. Check if input is sanitized before reaching the sink\n2. Check if there are middleware/WAF protections\n3. Check if the sink is actually reachable from user-controlled input\n4. Check if there are type constraints that prevent exploitation\n\nResult: Requires LLM analysis — use the main agent to evaluate this finding against the code context.`;
-  }, { name: 'finding_verify', description: 'Verify vulnerability findings', schema: z.object({ finding: z.string(), codeSnippet: z.string() }) }),
+  }, { name: 'finding_verify', description: 'Verify vulnerability findings', schema: z.object({ finding: z.string().describe('Vulnerability description'), codeSnippet: z.string().describe('Source code snippet') }) }),
 });
 
 // ── Exploit Testing Tools ──
 
-const SqlInjectSchema = z.object({ url: z.string(), param: z.string(), method: z.string().optional().default('GET') });
+const SqlInjectSchema = z.object({ url: z.string().describe('Target URL with vulnerable parameter'), paramName: z.string().optional().describe('Query/body parameter name to test for SQL injection (e.g. "id", "username"). If omitted, auto-detected from URL or common parameters.'), method: z.string().optional().default('GET').describe('HTTP method') });
 
 toolRegistry.register({
   name: 'sql_inject',
@@ -763,7 +785,11 @@ toolRegistry.register({
   description: 'Test parameters for SQL injection using safe, non-destructive payloads',
   tags: ['sqli', 'injection', 'exploit', 'testing'],
   factory: () => tool(async (input) => {
-    const { url, param, method } = SqlInjectSchema.parse(input);
+    const { url, paramName, method } = SqlInjectSchema.parse(u(input));
+    const params = paramName ? [paramName] : (() => {
+      const qs = url.includes('?') ? new URL(url).searchParams : null;
+      return qs && qs.size > 0 ? Array.from(qs.keys()).filter(k => k !== 'utm_source' && k !== 'utm_medium') : ['q', 'id', 'search', 'name'];
+    })();
     const payloads = [
       { payload: "' OR 1=1--", desc: 'Boolean-based blind' },
       { payload: "' UNION SELECT NULL--", desc: 'UNION-based' },
@@ -772,25 +798,28 @@ toolRegistry.register({
       { payload: "1' ORDER BY 1--", desc: 'ORDER BY enumeration' },
     ];
     const results: Array<{ desc: string; payload: string; status: number; time: number; indicator: string }> = [];
-    for (const { payload, desc } of payloads) {
-      const start = Date.now();
-      try {
-        const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${param}=${encodeURIComponent(payload)}` : url;
-        const res = await fetch(testUrl, { method, headers: method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}, body: method === 'POST' ? `${param}=${encodeURIComponent(payload)}` : undefined });
-        const text = await res.text();
-        const time = Date.now() - start;
-        let indicator = 'No obvious SQLi indicator';
-        if (text.toLowerCase().includes('sql syntax') || text.toLowerCase().includes('sql error')) indicator = '⚠️ SQL error message detected';
-        if (text.toLowerCase().includes('warning') && text.toLowerCase().includes('mysql')) indicator = '⚠️ MySQL warning detected';
-        if (time > 4000) indicator = '⚠️ Time delay detected — possible blind SQLi';
-        results.push({ desc, payload, status: res.status, time, indicator });
-      } catch (error) { results.push({ desc, payload, status: 0, time: Date.now() - start, indicator: `Error: ${error instanceof Error ? error.message : String(error)}` }); }
+    for (const p of params) {
+      for (const { payload, desc } of payloads) {
+        const start = Date.now();
+        try {
+          const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${p}=${encodeURIComponent(payload)}` : url;
+          const res = await fetch(testUrl, { method, headers: method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}, body: method === 'POST' ? `${p}=${encodeURIComponent(payload)}` : undefined });
+          const text = await res.text();
+          const time = Date.now() - start;
+          let indicator = 'No obvious SQLi indicator';
+          if (text.toLowerCase().includes('sql syntax') || text.toLowerCase().includes('sql error')) indicator = '⚠️ SQL error message detected';
+          if (text.toLowerCase().includes('warning') && text.toLowerCase().includes('mysql')) indicator = '⚠️ MySQL warning detected';
+          if (time > 4000) indicator = '⚠️ Time delay detected — possible blind SQLi';
+          results.push({ desc, payload, status: res.status, time, indicator });
+        } catch (error) { results.push({ desc, payload, status: 0, time: Date.now() - start, indicator: `Error: ${error instanceof Error ? error.message : String(error)}` }); }
+      }
     }
-    return `SQL Injection Test for ${method} ${url}?${param}=...\n\n${results.map((r) => `- [${r.desc}] ${r.payload.slice(0, 30)}\n  Status: ${r.status}, Time: ${r.time}ms\n  ${r.indicator}`).join('\n\n')}`;
+    const paramLabel = params.join(', ');
+    return `SQL Injection Test for ${method} ${url}?${paramLabel}=...\n\n${results.map((r) => `- [${r.desc}] ${r.payload.slice(0, 30)}\n  Status: ${r.status}, Time: ${r.time}ms\n  ${r.indicator}`).join('\n\n')}`;
   }, { name: 'sql_inject', description: 'Test for SQL injection', schema: SqlInjectSchema }),
 });
 
-const XssInjectSchema = z.object({ url: z.string(), param: z.string(), method: z.string().optional().default('GET') });
+const XssInjectSchema = z.object({ url: z.string().describe('Target URL with vulnerable parameter'), paramName: z.string().optional().describe('Query/body parameter name to test for XSS (e.g. "q", "search", "name"). If omitted, auto-detected from URL or common parameters.'), method: z.string().optional().default('GET').describe('HTTP method') });
 
 toolRegistry.register({
   name: 'xss_inject',
@@ -798,7 +827,7 @@ toolRegistry.register({
   description: 'Test parameters for XSS using safe payloads that detect reflection without executing',
   tags: ['xss', 'injection', 'exploit', 'testing'],
   factory: () => tool(async (input) => {
-    const { url, param, method } = XssInjectSchema.parse(input);
+    const { url, paramName, method } = XssInjectSchema.parse(u(input));
     const payloads = [
       { payload: '<script>alert(1)</script>', desc: 'Basic reflected XSS' },
       { payload: '<img src=x onerror=alert(1)>', desc: 'Event handler XSS' },
@@ -809,8 +838,8 @@ toolRegistry.register({
     const results: Array<{ desc: string; reflected: boolean; encoded: boolean; status: number }> = [];
     for (const { payload, desc } of payloads) {
       try {
-        const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${param}=${encodeURIComponent(payload)}` : url;
-        const res = await fetch(testUrl, { method, body: method === 'POST' ? `${param}=${encodeURIComponent(payload)}` : undefined });
+        const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${paramName}=${encodeURIComponent(payload)}` : url;
+        const res = await fetch(testUrl, { method, body: method === 'POST' ? `${paramName}=${encodeURIComponent(payload)}` : undefined });
         const text = await res.text();
         const reflected = text.includes(payload);
         const encoded = text.includes(encodeURIComponent(payload).replace(/%/g, '%25')) || text.includes('&lt;script');
@@ -818,7 +847,7 @@ toolRegistry.register({
       } catch { results.push({ desc, reflected: false, encoded: false, status: 0 }); }
     }
     const vulnerable = results.filter((r) => r.reflected && !r.encoded);
-    return `XSS Test for ${method} ${url}?${param}=...\n\n${results.map((r) => `- [${r.desc}] Reflected: ${r.reflected}, Encoded: ${r.encoded}, Status: ${r.status}`).join('\n')}\n\n${vulnerable.length > 0 ? `⚠️ VULNERABLE: ${vulnerable.length} payloads reflected without encoding` : '✅ No reflected XSS detected — payloads were encoded or not reflected'}`;
+    return `XSS Test for ${method} ${url}?${paramName}=...\n\n${results.map((r) => `- [${r.desc}] Reflected: ${r.reflected}, Encoded: ${r.encoded}, Status: ${r.status}`).join('\n')}\n\n${vulnerable.length > 0 ? `⚠️ VULNERABLE: ${vulnerable.length} payloads reflected without encoding` : '✅ No reflected XSS detected — payloads were encoded or not reflected'}`;
   }, { name: 'xss_inject', description: 'Test for XSS vulnerabilities', schema: XssInjectSchema }),
 });
 
@@ -828,7 +857,10 @@ toolRegistry.register({
   description: 'Test authentication bypass techniques (JWT alg=none, weak secrets, algorithm confusion)',
   tags: ['auth', 'bypass', 'jwt', 'exploit'],
   factory: () => tool(async (input) => {
-    const { url, token } = z.object({ url: z.string(), token: z.string().optional() }).parse(input);
+    const { url, token } = z.object({
+      url: z.string().describe('Target URL to test auth bypass on'),
+      token: z.string().optional().describe('Existing JWT token to analyze'),
+    }).parse(u(input));
     const tests: Array<{ name: string; result: string }> = [];
     if (token) {
       const parts = token.split('.');
@@ -843,7 +875,7 @@ toolRegistry.register({
     tests.push({ name: 'Header injection', result: `Try: X-Original-URL: /admin, X-Rewrite-URL: /admin, X-Forwarded-For: 127.0.0.1` });
     tests.push({ name: 'HTTP method override', result: `Try: X-HTTP-Method-Override: PUT, X-Method-Override: DELETE` });
     return `Auth Bypass Tests for ${url}:\n\n${tests.map((t) => `- ${t.name}: ${t.result}`).join('\n\n')}`;
-  }, { name: 'exploit_auth_bypass', description: 'Test authentication bypass techniques', schema: z.object({ url: z.string(), token: z.string().optional() }) }),
+  }, { name: 'exploit_auth_bypass', description: 'Test authentication bypass techniques', schema: z.object({ url: z.string().describe('Target URL to test auth bypass on'), token: z.string().optional().describe('Existing JWT token to analyze') }) }),
 });
 
 toolRegistry.register({
@@ -852,19 +884,23 @@ toolRegistry.register({
   description: 'Test authorization bypass (IDOR, privilege escalation, mass assignment)',
   tags: ['authz', 'idor', 'privilege-escalation', 'exploit'],
   factory: () => tool(async (input) => {
-    const { url, authToken, targetId } = z.object({ url: z.string(), authToken: z.string(), targetId: z.string() }).parse(input);
+    const { url, authToken, targetId } = z.object({
+      url: z.string().describe('Target API endpoint URL for authorization test'),
+      authToken: z.string().describe('Authentication token to use for requests'),
+      targetId: z.string().describe('Target resource ID to test authorization for'),
+    }).parse(u(input));
     const tests: Array<{ name: string; result: string }> = [];
     tests.push({ name: 'IDOR test', result: `GET ${url}/${targetId} with your token — if you get data for ${targetId}, it's vulnerable` });
     tests.push({ name: 'Horizontal escalation', result: `Change user ID in request body/URL to another user's ID` });
     tests.push({ name: 'Vertical escalation', result: `Add role: "admin" or isAdmin: true to request body` });
     tests.push({ name: 'Mass assignment', result: `Add unexpected fields: __proto__, constructor, prototype to request body` });
     return `Authorization Bypass Tests for ${url}:\n\n${tests.map((t) => `- ${t.name}: ${t.result}`).join('\n\n')}\n\nUse your auth token: ${authToken.slice(0, 20)}...`;
-  }, { name: 'exploit_authz', description: 'Test authorization bypass', schema: z.object({ url: z.string(), authToken: z.string(), targetId: z.string() }) }),
+  }, { name: 'exploit_authz', description: 'Test authorization bypass', schema: z.object({ url: z.string().describe('Target API endpoint URL for authorization test'), authToken: z.string().describe('Authentication token to use for requests'), targetId: z.string().describe('Target resource ID to test authorization for') }) }),
 });
 
 // ── Reconnaissance Tools ──
 
-const SubdomainEnumSchema = z.object({ domain: z.string() });
+const SubdomainEnumSchema = z.object({ domain: z.string().describe('Domain name to enumerate subdomains for (e.g. example.com)') });
 
 toolRegistry.register({
   name: 'subdomain_enum',
@@ -908,7 +944,10 @@ toolRegistry.register({
   description: 'Discover hidden directories and files via common wordlist probing',
   tags: ['directory', 'bruteforce', 'recon', 'enumeration'],
   factory: () => tool(async (input) => {
-    const { url, wordlist } = z.object({ url: z.string(), wordlist: z.array(z.string()).optional() }).parse(input);
+    const { url, wordlist } = z.object({
+      url: z.string().describe('Target URL to discover hidden directories on'),
+      wordlist: z.array(z.string()).optional().describe('Custom wordlist of paths/names to check'),
+    }).parse(u(input));
     const commonPaths = wordlist || [
       'admin', 'login', 'api', 'debug', 'console', 'dashboard', 'config',
       'backup', 'db', 'database', 'test', 'staging', 'dev', '.env',
@@ -923,12 +962,12 @@ toolRegistry.register({
       } catch { /* skip */ }
     }));
     return `Directory brute force for ${url}:\n\nFound ${found.length} non-404 paths:\n${found.map((f) => `- [${f.status}] /${f.path} (${f.size} bytes)`).join('\n') || 'Nothing interesting found'}`;
-  }, { name: 'dir_bruteforce', description: 'Discover hidden directories', schema: z.object({ url: z.string(), wordlist: z.array(z.string()).optional() }) }),
+  }, { name: 'dir_bruteforce', description: 'Discover hidden directories', schema: z.object({ url: z.string().describe('Target URL to discover hidden directories on'), wordlist: z.array(z.string()).optional().describe('Custom wordlist of paths/names to check') }) }),
 });
 
 // ── Secrets & SSL Tools ──
 
-const SecretsScanSchema = z.object({ path: z.string() });
+const SecretsScanSchema = z.object({ path: z.string().describe('File system path to scan for hardcoded secrets') });
 
 toolRegistry.register({
   name: 'secrets_scan',
@@ -969,7 +1008,10 @@ toolRegistry.register({
   }, { name: 'secrets_scan', description: 'Detect hardcoded secrets in source code', schema: SecretsScanSchema }),
 });
 
-const SslCheckSchema = z.object({ url: z.string() });
+const SslCheckSchema = z.object({
+  url: z.string().describe('Target URL to check SSL/TLS for'),
+  target: z.string().optional().describe('Alias for url'),
+}).transform(v => ({ url: v.url || v.target || '' }));
 
 toolRegistry.register({
   name: 'ssl_check',
@@ -977,7 +1019,7 @@ toolRegistry.register({
   description: 'Check SSL/TLS certificate validity, expiration, and configuration',
   tags: ['ssl', 'tls', 'certificate', 'network'],
   factory: () => tool(async (input) => {
-    const { url } = SslCheckSchema.parse(input);
+    const { url } = SslCheckSchema.parse(u(input));
     try {
       const res = await fetch(url);
       const headers: Record<string, string> = {};
@@ -1056,6 +1098,14 @@ toolRegistry.register({
   description: 'Fill a form field with a value in a browser session',
   tags: ['browser', 'playwright', 'form', 'input'],
   factory: () => createBrowserFillTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_press_key',
+  category: 'browser',
+  description: 'Press a keyboard key in the browser session (e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+a"). Use after browser_fill to submit forms/chat messages.',
+  tags: ['browser', 'playwright', 'keyboard', 'form', 'submit'],
+  factory: () => createBrowserPressKeyTool(),
 });
 
 toolRegistry.register({

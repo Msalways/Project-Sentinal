@@ -1,22 +1,51 @@
-import { DynamicStructuredTool } from '@langchain/core/tools';
+import { createAgent, toolCallLimitMiddleware, modelCallLimitMiddleware } from 'langchain';
+import { DynamicStructuredTool, tool } from '@langchain/core/tools';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { createDeepAgent } from 'deepagents';
 import { z } from 'zod';
 import { toolRegistry } from './tool-registry';
 
 export function createSpawnAgentTool(model: BaseChatModel): DynamicStructuredTool {
+  // Track the last target URL so sub-agents can be spawned without it
+  let lastTargetUrl = '';
+  const inferTools = (goal: string): string[] => {
+    const g = goal.toLowerCase();
+    const tools: string[] = ['http_request'];
+    if (g.includes('recon') || g.includes('technology') || g.includes('technolog') || g.includes('infrastructure')) tools.push('tech_detect', 'subdomain_enum', 'dir_bruteforce');
+    if (g.includes('vuln') || g.includes('sqli') || g.includes('sql') || g.includes('xss') || g.includes('injection')) tools.push('sql_inject', 'xss_inject', 'header_analyze');
+    if (g.includes('exploit') || g.includes('bypass') || g.includes('auth') || g.includes('idor')) tools.push('sql_inject', 'xss_inject', 'exploit_auth_bypass', 'exploit_authz');
+    if (g.includes('report') || g.includes('summariz') || g.includes('compil')) tools.push('write_file');
+    return [...new Set(tools)];
+  };
+
   return new DynamicStructuredTool({
     name: 'spawn_subagent',
-    description: 'Dynamically create a sub-agent with specific tools and a task goal. Returns the sub-agent\'s complete output.',
+    description: 'Dynamically create a sub-agent with a specific task. Tools are auto-inferred from the goal. The sub-agent runs and returns its findings.',
     schema: z.object({
-      name: z.string().describe('A short identifier for this sub-agent (e.g. sqli-scanner, xss-checker)'),
+      name: z.string().optional().describe('A short identifier for this sub-agent (e.g. sqli-scanner, xss-checker). Auto-generated from goal if omitted.'),
       goal: z.string().describe('The specific task for this sub-agent to accomplish. Be detailed about what to do and what output to produce.'),
-      toolNames: z.array(z.string()).describe('List of tool names this sub-agent can use. Pick only tools relevant to the task — do NOT give it tools it does not need.'),
-      targetUrl: z.string().describe('The actual target URL that this sub-agent should test. Must be the real target URL — never a placeholder or example.com.'),
-      maxSteps: z.number().optional().default(30).describe('Maximum number of steps for the sub-agent before it must return'),
+      toolNames: z.preprocess(
+        (val) => {
+          if (typeof val === 'string') {
+            // Extract JSON array portion if present (LLM sometimes dumps XML/extra text into toolNames)
+            const jsonMatch = val.match(/\[.*?\]/);
+            if (jsonMatch) {
+              try { return JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+            }
+            return val.replace(/<[^>]*>/g, '').split(/[ ,;]+/).filter(Boolean);
+          }
+          return val;
+        },
+        z.array(z.string()).optional(),
+      ).describe('OVERRIDE auto-inferred tools. Only include if you MUST override. Normally leave out — tools are auto-selected from the goal.'),
+      targetUrl: z.string().optional().describe('The actual target URL that this sub-agent should test. If omitted, uses the last known target URL.'),
     }),
     func: async (input) => {
-      const { name, goal, toolNames, targetUrl, maxSteps } = input;
+      const goal = input.goal;
+      const name = input.name || goal.slice(0, 40).replace(/\s+/g, '-').toLowerCase();
+      const toolNames = input.toolNames || inferTools(goal);
+      const targetUrl = input.targetUrl || lastTargetUrl;
+      if (targetUrl) lastTargetUrl = targetUrl;
+      if (!targetUrl) return `Error: No target URL provided and no previous target URL known. Include targetUrl in spawn_subagent.`;
 
       const availableTools = toolRegistry.getAll();
       const toolMap = new Map<string, DynamicStructuredTool>();
@@ -26,15 +55,35 @@ export function createSpawnAgentTool(model: BaseChatModel): DynamicStructuredToo
       const missing: string[] = [];
       for (const tn of toolNames) {
         const t = toolMap.get(tn);
-        if (t) grantedTools.push(t);
-        else missing.push(tn);
+        if (t) {
+          const dt = t as DynamicStructuredTool;
+          const wrapped = tool(
+            async (input: Record<string, unknown>) => {
+              // Normalize malformed LLM input
+              let kwargs = input;
+              // LLM sometimes nests all params inside 'body'
+              if (typeof kwargs.body === 'object' && kwargs.body && !Array.isArray(kwargs.body)) {
+                const bodyObj = kwargs.body as Record<string, unknown>;
+                if (bodyObj.url || bodyObj.method) {
+                  const { body, ...rest } = kwargs;
+                  kwargs = { ...bodyObj, ...rest };
+                }
+              }
+              // Inject targetUrl if url is missing
+              if (!kwargs.url && targetUrl) kwargs = { ...kwargs, url: targetUrl };
+              return String(await dt.call(kwargs));
+            },
+            { name: dt.name, description: dt.description, schema: dt.schema as any },
+          );
+          grantedTools.push(wrapped);
+        } else missing.push(tn);
       }
 
       if (grantedTools.length === 0) {
         return `Error: No valid tools found for sub-agent "${name}". Requested: ${toolNames.join(', ')}. Available: ${Array.from(toolMap.keys()).join(', ')}`;
       }
 
-      const agent = createDeepAgent({
+      const agent = createAgent({
         model,
         tools: grantedTools,
         systemPrompt: [
@@ -47,9 +96,15 @@ export function createSpawnAgentTool(model: BaseChatModel): DynamicStructuredToo
           ``,
           `You have access to these tools: ${grantedTools.map((t) => t.name).join(', ')}`,
           ``,
-          `Focus only on your assigned task. Do not deviate. When you have completed the goal, provide a clear summary of what you found.`,
-          `Maximum steps: ${maxSteps}`,
+          `## Rules`,
+          `- Be concise. Stop as soon as you have enough information.`,
+          `- Do not repeat tool calls — if a tool returns an error, move on.`,
+          `- Return your findings in your final message — include everything you discovered.`,
         ].join('\n'),
+        middleware: [
+          toolCallLimitMiddleware({ runLimit: 20 }),
+          modelCallLimitMiddleware({ runLimit: 15, exitBehavior: 'end' }),
+        ],
       });
 
       try {

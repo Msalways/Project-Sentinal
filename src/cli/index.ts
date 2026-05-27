@@ -95,164 +95,216 @@ program
       model,
       target: { url: config.scan?.target || opts.target } as ScanTarget,
       outputDir: config.output?.dir || opts.output || './output',
+      format: config.output?.format || opts.format || 'markdown',
     });
 
     const result = await orchestrator.run();
-    log.success(`Assessment complete. Report: ${result.reportPath}`);
+
+    const fs = await import('fs');
+    if (fs.existsSync(result.reportPath)) {
+      log.success(`Assessment complete. Report: ${result.reportPath}`);
+    } else {
+      log.warn('Assessment finished but no report file was generated.');
+      log.warn(`Expected at: ${result.reportPath}`);
+    }
 
     if (opts.ci && result.findings.some((f) => f.severity === 'critical')) {
       process.exit(1);
     }
+    process.exit(0);
   });
 
-// ── map: Autonomous app flow mapping ──
+// ── map: Two-phase app flow mapping ──
 program
   .command('map')
-  .description('Autonomously explore and map the application flow — generates flow.yaml, tests, HAR')
+  .description('Phase 1: auto-crawl all routes. Phase 2: interactive user workflow recording — generates site-map, HAR, Playwright tests')
   .option('-t, --target <url>', 'Target URL')
   .option('-o, --output <dir>', 'Output directory', './flow-output')
   .option('--headless', 'Run browser in headless mode')
-  .option('--flow-repo <url>', 'Git registry URL for storing/retrieving flow data')
+  .option('--depth <n>', 'Crawl depth (default 2)', '2')
   .option('--provider <provider>', 'LLM provider')
   .option('--model <model>', 'Model ID')
   .action(async (opts) => {
-    if (!opts.target) {
-      log.error('No target specified. Use -t <url>');
-      process.exit(1);
+    if (!opts.target) { log.error('No target specified. Use -t <url>'); process.exit(1); }
+
+    const outDir = path.resolve(opts.output);
+    fs.mkdirSync(outDir, { recursive: true });
+    const target = opts.target.replace(/\/$/, '');
+
+    const { getSharedBrowserManager: getMgr } = await import('../tools/browser-tools');
+    const mgr = getMgr(opts.headless);
+
+    // ── Phase 1: Spider crawl ──
+    log.header('Phase 1: Spider Crawl', target);
+    const { SpiderCrawler } = await import('../core/spider');
+    const spider = new SpiderCrawler(mgr);
+    const crawlResult = await spider.crawl(target, parseInt(opts.depth, 10) || 2);
+
+    // Save spider trace as HAR
+    if (crawlResult.trace.length > 0) {
+      const { traceToHar } = await import('../flow/build-from-trace');
+      fs.writeFileSync(path.join(outDir, 'spider-session.har'), traceToHar(crawlResult.trace));
     }
 
+    // Write site-map
+    const siteMap = {
+      baseUrl: crawlResult.baseUrl,
+      totalRoutes: crawlResult.totalRoutes,
+      maxDepth: crawlResult.maxDepth,
+      durationMs: crawlResult.durationMs,
+      routes: crawlResult.routes,
+      errors: crawlResult.errors,
+    };
+    fs.writeFileSync(path.join(outDir, 'site-map.json'), JSON.stringify(siteMap, null, 2));
+    const yamlLines = [
+      `# Site Map — ${crawlResult.baseUrl}`,
+      `crawled: ${new Date().toISOString()}`,
+      `totalRoutes: ${crawlResult.totalRoutes}`,
+      `maxDepth: ${crawlResult.maxDepth}`,
+      `durationMs: ${crawlResult.durationMs}`,
+      ``,
+      `routes:`,
+      ...crawlResult.routes.map((r) => `  - path: ${r.path}\n    title: ${r.title}\n    depth: ${r.depth}\n    forms: ${r.forms}\n    links: ${r.linkCount}`),
+    ];
+    fs.writeFileSync(path.join(outDir, 'site-map.yaml'), yamlLines.join('\n'));
+
+    log.success(`Crawl complete — ${crawlResult.totalRoutes} routes in ${crawlResult.durationMs}ms`);
+    log.info(`Routes found:`);
+    for (const r of crawlResult.routes) {
+      log.dim(`  [depth ${r.depth}] ${r.path} — ${r.title}`);
+    }
+    if (crawlResult.errors.length > 0) {
+      log.warn(`${crawlResult.errors.length} errors during crawl:`);
+      for (const e of crawlResult.errors.slice(0, 5)) log.dim(`  ${e.url}: ${e.error}`);
+    }
+
+    // ── Phase 2: Interactive user flow ──
+    log.divider();
+    log.header('Phase 2: User Flow', 'Interactive session recording');
+    log.info(`Session ready. ${crawlResult.totalRoutes} routes crawled. Type actions (e.g., "go to /login", "click Sign Up"). Type /close to finish.`);
+
+    const { createDeepAgent } = await import('deepagents');
+    const { fixWriteTodosMiddleware } = await import('../core/fix-todos');
+    const { toolRegistry: toolReg } = await import('../tools/tool-registry');
     const config = await loadRuntimeConfig({ ...opts });
     const model = await loadModel(config);
 
-    const { createDeepAgent } = await import('deepagents');
-    const { toolRegistry: toolReg } = await import('../tools/tool-registry');
+    // Start trace on 'default' session — browser tools default to this
+    await mgr.startTrace('default');
+    mgr.startRecording('default');
 
-    const allTools: DynamicStructuredTool[] = toolReg.getByCategory('browser') as DynamicStructuredTool[];
+    const allTools = toolReg.getByCategory('browser') as DynamicStructuredTool[];
     const traceTool = toolReg.get('build_flow_from_trace');
     if (traceTool) allTools.push(traceTool);
 
     const agent = createDeepAgent({
       model,
       tools: allTools,
-      systemPrompt: `You are exploring and mapping a web application.
+      middleware: [fixWriteTodosMiddleware],
+      systemPrompt: `You are recording a user workflow on ${target}. The browser already has an open session.
 
-Goal: navigate through every page, interact with forms, and discover all API endpoints so the app's flow model can be built automatically.
+Available routes discovered during crawl:
+${crawlResult.routes.map((r) => `  ${r.path} — ${r.title}`).join('\n')}
 
-Steps:
-1. Start browser_start_trace to capture all network requests
-2. Start browser_start_recording to capture user interactions for Playwright test generation
-3. Navigate to ${opts.target} with browser_navigate
-4. Click every link, fill and submit forms with test data
-5. After thorough exploration, call browser_stop_trace and browser_stop_recording
-6. Finally, call build_flow_from_trace to generate flow.yaml + flow.json + session.har + Playwright test files
-
-The network trace captures requests, payloads, auth headers automatically. The recording captures click/fill/navigate steps for Playwright code.
-
-Never use example.com — the target is ${opts.target}`,
+RULES:
+1. The browser is already on a page. Check the current URL before navigating — only navigate if the user explicitly wants a different page.
+2. Use browser_fill to fill inputs, browser_click to click, browser_press_key for keyboard actions (Enter to submit, Escape to close, Tab to navigate).
+3. Use browser_extract(type="text") to read visible page content. Avoid dumping raw HTML.
+4. After each action, briefly describe what happened in 1 sentence. Do not echo raw tool output.
+5. Wait for the user's next instruction after each action.`,
     });
 
-    log.header('App Flow Mapping', opts.target);
+    const { createInterface } = await import('readline');
+    const chalk = (await import('chalk')).default;
+    const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: chalk.cyan('> ') });
 
-    const stream = await agent.stream(
-      { messages: [{ role: 'user', content: `Map the application at ${opts.target}. Start by navigating to it with browser_navigate.` }] },
-      { streamMode: 'messages', subgraphs: true },
-    );
+    rl.write(`Session ready. ${crawlResult.totalRoutes} routes crawled. Type actions or /close.\n`);
+    rl.prompt();
 
-    for await (const [namespace, chunk] of stream) {
-      const msg = chunk?.[0];
-      if (!msg) continue;
+    for await (const line of rl) {
+      const input = line.trim();
+      if (input === '/close' || input === '/quit') break;
+      if (!input) { rl.prompt(); continue; }
 
-      if (msg.text) process.stdout.write(msg.text);
+      const stream = await agent.stream(
+        { messages: [{ role: 'user', content: input }] },
+        { streamMode: 'messages', subgraphs: true },
+      );
 
-      const tcChunks = (msg as any).tool_call_chunks;
-      if (tcChunks?.length) {
-        for (const tc of tcChunks) {
-          if (tc.name) process.stdout.write(colors.dim(`\n→ ${tc.name}\n`));
+      for await (const [, chunk] of stream) {
+        const msg = chunk?.[0];
+        if (!msg) continue;
+        if (msg.text) process.stdout.write(msg.text);
+
+        if ((msg as any)._getType?.() === 'tool') {
+          const result = msg.content;
+          const s = typeof result === 'string' ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200);
+          if (s?.trim()) process.stdout.write('\n' + colors.dim(`  [${s.replace(/\n/g, ' ').trim()}]\n`));
         }
       }
 
-      if ((msg as any)._getType?.() === 'tool') {
-        const result = msg.content;
-        const resultStr = typeof result === 'string' ? result.slice(0, 500) : JSON.stringify(result).slice(0, 500);
-        if (resultStr?.trim()) process.stdout.write(colors.dim(`  ↳ ${resultStr}\n`));
-      }
+      process.stdout.write('\n');
+      rl.prompt();
     }
 
+    rl.close();
     log.divider();
 
-    const { LocalRegistry } = await import('../flow/local-registry');
-    const registry = new LocalRegistry(opts.target);
-    const outDir = path.resolve(opts.output);
-    const testDir = path.join(outDir, 'tests');
-
-    const previousModel = registry.loadPrevious();
-    const currentJson = path.join(outDir, 'flow.json');
-    const currentModel = fs.existsSync(currentJson) ? JSON.parse(fs.readFileSync(currentJson, 'utf-8')) : null;
-
-    if (previousModel && currentModel) {
-      const diff = registry.diff(currentModel);
-
-      if (diff.hasChanges) {
-        log.info('Changes from previous scan:');
-        for (const p of diff.addedPages) log.dim(`  + new page: ${p}`);
-        for (const p of diff.removedPages) log.dim(`  - removed: ${p}`);
-        for (const p of diff.changedPages) {
-          log.dim(`  ~ ${p.path}:`);
-          for (const c of p.changes) log.dim(`      ${c}`);
-        }
-        for (const a of diff.addedApis) log.dim(`  + new API: ${a}`);
-        for (const f of diff.impactedFlows) log.dim(`  ↳ impacted: ${f}`);
-
-        const changedPaths = new Set([
-          ...diff.addedPages,
-          ...diff.changedPages.map(p => p.path),
-        ]);
-
-        if (fs.existsSync(testDir)) {
-          const registryTests = path.join(registry.path, 'tests');
-          const freshTests = fs.readdirSync(testDir).filter(f => f.endsWith('.spec.ts'));
-          let restored = 0;
-          for (const testFile of freshTests) {
-            const pagePath = '/' + testFile.replace(/\.spec\.ts$/, '').replace(/-/g, '/');
-            const pageName = testFile.replace('.spec.ts', '');
-            const isChanged = changedPaths.has(pagePath) || changedPaths.has('/' + pageName) ||
-              Array.from(changedPaths).some(cp => cp.includes(pageName));
-            if (!isChanged) {
-              const oldTest = path.join(registryTests, testFile);
-              if (fs.existsSync(oldTest)) {
-                fs.copyFileSync(oldTest, path.join(testDir, testFile));
-                restored++;
-              }
-            }
-          }
-          if (restored > 0) log.dim(`Restored ${restored} unchanged test files from previous scan`);
-        }
-      } else {
-        log.info('No changes detected — keeping all previous tests.');
-        if (fs.existsSync(path.join(registry.path, 'tests'))) {
-          const registryTests = path.join(registry.path, 'tests');
-          if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
-          fs.cpSync(registryTests, testDir, { recursive: true });
-        }
-      }
+    // ── Write recorded flow ──
+    const userTrace = mgr.stopTrace('default');
+    const userSteps = mgr.stopRecording('default');
+    if (userTrace.length > 0) {
+      const { traceToHar: toHar } = await import('../flow/build-from-trace');
+      fs.writeFileSync(path.join(outDir, 'user-session.har'), toHar(userTrace));
     }
-
-    if (fs.existsSync(outDir)) {
-      fs.mkdirSync(registry.path, { recursive: true });
-      const entries = fs.readdirSync(outDir);
-      for (const entry of entries) {
-        const src = path.join(outDir, entry);
-        const dst = path.join(registry.path, entry);
-        if (fs.statSync(src).isDirectory()) {
-          fs.mkdirSync(dst, { recursive: true });
-          for (const child of fs.readdirSync(src)) fs.copyFileSync(path.join(src, child), path.join(dst, child));
-        } else {
-          fs.copyFileSync(src, dst);
+    const flowPath = path.join(outDir, 'user-flow.spec.ts');
+    const lines: string[] = [];
+    lines.push(`import { test, expect } from '@playwright/test';`);
+    lines.push(``);
+    lines.push(`// Auto-generated user flow — ${target}`);
+    lines.push(`// Crawled ${crawlResult.totalRoutes} routes, ${userSteps.length} user actions`);
+    lines.push(`// ${new Date().toISOString()}`);
+    lines.push(``);
+    lines.push(`test.describe('User Workflow', () => {`);
+    for (let i = 0; i < userSteps.length; i++) {
+      const s = userSteps[i];
+      lines.push(`  test('step ${i + 1}', async ({ page }) => {`);
+      switch (s.type) {
+        case 'navigate':
+          lines.push(`    await page.goto('${s.url}');`);
+          break;
+        case 'click': {
+          const sel = (s.selector || '').replace(/'/g, "\\'");
+          lines.push(`    await page.locator('${sel}').click();`);
+          break;
         }
+        case 'fill': {
+          const sel = (s.selector || '').replace(/'/g, "\\'");
+          const val = (s.value || '').replace(/'/g, "\\'");
+          lines.push(`    await page.locator('${sel}').fill('${val}');`);
+          break;
+        }
+        default:
+          lines.push(`    // ${s.type} — not captured`);
       }
+      lines.push(`  });`);
+      lines.push(``);
     }
+    lines.push(`});`);
+    fs.writeFileSync(flowPath, lines.join('\n'), 'utf-8');
+
+    log.success(`User flow recorded: ${userSteps.length} actions → ${flowPath}`);
+    await spider.close();
+    await new Promise((r) => setTimeout(r, 500));
 
     log.header('Mapping Complete', `Artifacts in ${opts.output}`);
+    log.dim(`  site-map.json — ${crawlResult.totalRoutes} routes`);
+    log.dim(`  site-map.yaml — route tree`);
+    log.dim(`  spider-session.har — ${crawlResult.trace.length} network entries`);
+    log.dim(`  spider-recording — ${crawlResult.recording.length} steps`);
+    log.dim(`  user-session.har — ${userTrace.length} network entries`);
+    log.dim(`  user-flow.spec.ts — ${userSteps.length} test steps`);
+    process.exit(0);
   });
 
 // ── demo: Quick mock scan ──

@@ -4,6 +4,7 @@ import { type Tool } from '@langchain/core/tools';
 import type { AgentName, Finding, Severity } from '../core/types';
 import { toolRegistry } from '../tools/tool-registry';
 import { agentRegistry } from '../agents/agent-registry';
+import { fixWriteTodosMiddleware } from '../core/fix-todos';
 
 export interface UltimatrixAgentConfig {
   model: BaseChatModel;
@@ -40,6 +41,7 @@ export function createUltimatrixAgent(config: UltimatrixAgentConfig): ReturnType
   return createDeepAgent({
     model: config.model,
     tools: config.allTools,
+    middleware: [fixWriteTodosMiddleware],
     subagents,
     systemPrompt: `You are Ultimatrix, an autonomous AI security team lead.
 

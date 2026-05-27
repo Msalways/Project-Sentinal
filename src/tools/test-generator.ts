@@ -46,6 +46,31 @@ export class PlaywrightTestGenerator {
   }
 
   private parseStep(step: string): string {
+    // Structured recording format: NAV|<url>, CLI|<selector>, FIL|<selector>|<value>
+    if (step.startsWith('NAV|')) {
+      const url = step.slice(4);
+      try {
+        const parsed = new URL(url);
+        const routePath = parsed.pathname + parsed.search;
+        if (routePath === '/') return `    await page.goto('${url}');\n    await expect(page).toHaveTitle(/.+/);`;
+        return `    await page.goto('${url}');\n    await expect(page).toHaveURL(/.+/);`;
+      } catch {
+        return `    // TODO: navigate to ${url}`;
+      }
+      return `    await page.goto('${url}');\n    await expect(page).toHaveURL(/.+/);`;
+    }
+    if (step.startsWith('CLI|')) {
+      const selector = step.slice(4);
+      return `    await page.locator('${selector.replace(/'/g, "\\'")}').click();`;
+    }
+    if (step.startsWith('FIL|')) {
+      const pipeIdx = step.indexOf('|', 4);
+      if (pipeIdx === -1) return `    // TODO: fill — malformed step: ${step}`;
+      const selector = step.slice(4, pipeIdx);
+      const value = step.slice(pipeIdx + 1);
+      return `    await page.locator('${selector.replace(/'/g, "\\'")}').fill('${value.replace(/'/g, "\\'")}');`;
+    }
+
     const lower = step.toLowerCase();
     if (lower.includes('login') || lower.includes('valid credential')) return `    await page.goto('${this.target}/login');\n    await page.fill('#email', 'user@test.com');\n    await page.fill('#password', 'correct-password');\n    await page.click('[type="submit"]');\n    await expect(page).toHaveURL(/dashboard/);`;
     if (lower.includes('browse') || lower.includes('product')) return `    await page.goto('${this.target}/products');\n    await expect(page.locator('.product-list')).toBeVisible();`;
