@@ -1,4 +1,4 @@
-# Project Sentinel — Hackathon Deck Content
+# Ultimatrix — Hackathon Deck Content
 # Microsoft Build AI 2026 | Security in the Agentic Future
 # 10 Slides Max
 
@@ -6,7 +6,7 @@
 
 ## Slide 1: Title
 
-**Project Sentinel**
+**Ultimatrix**
 AI-Powered Security Team-in-a-Box
 
 *Multi-agent security testing that learns your app, generates tests, and finds vulnerabilities autonomously*
@@ -34,7 +34,7 @@ Track: Security in the Agentic Future
 
 **A security team that works as fast as you ship**
 
-Project Sentinel is an AI-powered security team that:
+Ultimatrix is an AI-powered security team that:
 
 1. **Learns** your application by watching real user workflows
 2. **Understands** your architecture, roles, happy paths, and sad paths
@@ -112,7 +112,7 @@ Agents share context through a group chat pattern. Each agent's findings become 
 
 ## Slide 7: What Makes Sentinel Different
 
-| Traditional Scanner | Project Sentinel |
+| Traditional Scanner | Ultimatrix |
 |---------------------|------------------|
 | Blind fuzzing | Understands your workflows |
 | Generic tests | Context-aware attacks |
@@ -122,7 +122,7 @@ Agents share context through a group chat pattern. Each agent's findings become 
 | Static rules | AI-powered reasoning |
 | No test generation | Auto-generates Playwright tests |
 
-**Key Innovation:** Sentinel learns your app first, then tests it intelligently — not blindly.
+**Key Innovation:** Ultimatrix learns your app first, then tests it intelligently — not blindly.
 
 ---
 

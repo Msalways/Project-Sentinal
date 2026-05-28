@@ -1,6 +1,6 @@
 # Future Tool Integrations
 
-Security tools planned for future integration into Project Sentinel. These will expand coverage across web, network, cloud, and API security testing.
+Security tools planned for future integration into Ultimatrix. These will expand coverage across web, network, cloud, and API security testing.
 
 ---
 

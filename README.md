@@ -1,332 +1,254 @@
-# 🛡️ Ultimatrix
+# Ultimatrix
 
-**AI-Powered Security Team-in-a-Box** — A multi-agent security testing platform with 60+ built-in security tools, live browser control, skill-based expert guidance, automatic app flow mapping via network tracing, and a dynamic sub-agent orchestrator that creates specialized agents on-the-fly.
+**AI-Powered Autonomous Security Operator** — Single-agent loop that explores, maps, analyses, and attacks web applications. The LLM crafts every payload dynamically based on response analysis. No canned payload lists, no fixed pipeline.
 
 > ⚠️ **Under active development.** Not yet published. API and behavior may change without notice.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![60+ Tools](https://img.shields.io/badge/Security%20Tools-60+-brightgreen.svg)](#arsenal)
+[![45 Tools](https://img.shields.io/badge/Tools-45-brightgreen.svg)](#tools)
 [![11 Providers](https://img.shields.io/badge/LLM%20Providers-11-blueviolet.svg)](#configure-llm-provider)
-[![307 Tests](https://img.shields.io/badge/Tests-307%20passing-success.svg)](#testing)
+[![306 Tests](https://img.shields.io/badge/Tests-306%20passing-success.svg)](#testing)
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Install
+# Install
 npm install
 
-# 2. Interactive setup (writes ultimatrix.yaml)
+# Interactive setup (writes ultimatrix.yaml)
 npx tsx src/cli/index.ts init
 
-# 3. Run security scan
-npx tsx src/cli/index.ts scan -t https://your-app.com
-
-# Or with no config — auto-REPL
-npx tsx src/cli/index.ts
+# Full assessment — auto-explore then attack
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output
 ```
 
 ---
 
-## Modes of Operation
+## Modes
 
-### 🧠 Autonomous Scan (`ultimatrix scan`)
-A **goal-driven autonomous pentest** — a lead agent dynamically spawns specialized sub-agents with only the tools they need:
+### `assess` — Full assessment (primary entry point)
+
+Two-phase operation:
+
+**Phase 1 — Automated Exploration (pre-map):** BFS crawl with Playwright. Intercepts all HTTP traffic via `page.route()`. Captures DOM before/after every click and form submit. Correlates network requests with DOM transitions to build the workflow graph automatically.
+
+**Phase 2 — LLM Attack:** The agent starts with a pre-mapped workflow graph (nodes, edges, endpoints, forms, auth boundaries, classified parameters). It reads the map and attacks known endpoints with crafted payloads — no blind re-exploration needed.
 
 ```bash
-npx tsx src/cli/index.ts scan -t https://target.com -o ./output
+# Basic
+ultimatrix assess -t https://target.com -o ./output
+
+# With automated exploration (default depth=2)
+ultimatrix assess -t https://target.com -o ./output --depth 3
+
+# Skip exploration for fast re-scans
+ultimatrix assess -t https://target.com -o ./output --skip-explore
+
+# Pre-populate from existing artifacts
+ultimatrix assess -t https://target.com -o ./output \
+  --with-openapi ./api-spec.yaml \
+  --with-har ./session.har \
+  --with-postman ./collection.json \
+  --with-src ./src
+
+# Live dashboard
+ultimatrix assess -t https://target.com -o ./output --dashboard
 ```
 
-The lead agent analyzes the target, then spawns sub-agents on-the-fly (`recon-scanner`, `sql-injector`, `xss-checker`, etc.) — each with a precise tool subset. No fixed pipeline; the agent decides what to run, when, and with which tools.
+### `scan` — Autonomous pentest
 
-### 💬 Interactive REPL (`ultimatrix` with no args)
-A **live chat loop** with the autonomous agent:
+Legacy entry point, checks for existing `app-model.json` in output dir and passes it to the agent.
 
 ```bash
-npx tsx src/cli/index.ts
+ultimatrix scan -t https://target.com -o ./output
 ```
 
-Commands: `/quit` to exit. All other input goes to the agent.
+### `verify` — Re-run findings against new deployment
 
-### 🗺️ App Flow Mapping (`ultimatrix map`)
-**Automatic application flow discovery** — explores the app via live browser, silently captures every network request, and generates a complete flow model with change detection:
+Replays exact same payloads against a fresh target, classifies each finding as fixed/regressed/unchanged.
 
 ```bash
-npx tsx src/cli/index.ts map -t https://target.com -o ./flow-output
+ultimatrix verify -a ./output/app-model.json -t https://new-deployment.com
 ```
 
-How it works:
-1. Agent starts `browser_start_trace` + `browser_start_recording`
-2. Agent navigates, clicks, fills forms — trace captures all requests, payloads, auth headers
-3. Agent calls `build_flow_from_trace` → generates:
-   - `flow.yaml` / `flow.json` — pages, forms, API endpoints, auth model
-   - `session.har` — full HAR file of all captured traffic
-   - `tests/*.spec.ts` — Playwright test files from recorded actions
-4. Results saved to `~/.ultimatrix/registry/<app>/` automatically
-5. On subsequent runs, diffs against previous model and reports: new pages, removed pages, changed forms/endpoints, and **impacted flows** (which pages link to changed routes)
-
-### 🎯 Ultimatrix Init (`ultimatrix init`)
-Interactive wizard that writes `ultimatrix.yaml`:
+### `interact` — Live REPL chat loop
 
 ```bash
-npx tsx src/cli/index.ts init
+ultimatrix interact -t https://target.com
 ```
 
----
-
-## 🧠 Skill System
-
-Agents can load **expert skill files** on-demand during pentesting — specialized markdown guides with MITRE ATT&CK mappings:
-
-| Skill | Domain | MITRE |
-|-------|--------|-------|
-| `web-recon` | Web reconnaissance | T1595 |
-| `sql-injection` | SQL injection testing | T1190 |
-| `xss` | Cross-site scripting | T1189 |
-| `sast` | Static analysis | T1082 |
+### `init` — Interactive config wizard
 
 ```bash
-# In REPL or agent context
-list_skills
-load_skill(name="sql-injection")
+ultimatrix init
 ```
 
 ---
 
-## 🔧 Arsenal — 60+ Security Tools
+## Automated Exploration (Pre-Map Phase)
 
-### Browser Control
+When `--depth N` (default 2) is specified during `assess`, Ultimatrix performs a fully automated crawl before the LLM gets involved:
 
-| Tool | What It Does |
-|------|-------------|
-| `browser_navigate` | Navigate browser to URL with session management |
-| `browser_click` | Click elements on the page |
-| `browser_fill` | Fill form fields with values |
-| `browser_screenshot` | Capture page screenshot (base64) |
-| `browser_extract` | Extract text, HTML, or links |
-| `browser_evaluate` | Execute JavaScript in the browser context |
-| `browser_close` | Close a browser session |
-| `browser_record_login` | Record and replay a login macro |
+1. **Network interception:** Every request/response is captured via Playwright `page.route()` — method, URL, status, headers, bodies, timing.
+2. **DOM snapshots:** Before and after every interaction (click, form fill, submit), the full page state is captured: URL, title, forms, interactive elements, text content.
+3. **Hash-based diffing:** DOM hashes are compared to detect real state changes. If the DOM didn't change, the interaction is skipped.
+4. **Context-aware form filling:** Fields are auto-filled with realistic test data based on field name, type, and placeholder (e.g., `email` → `test@example.com`, `price` → `100`).
+5. **BFS queue:** New URLs discovered during crawl are added to a breadth-first queue with depth tracking.
 
-### Network Tracing & App Flow Mapping
+The result is a complete workflow graph (nodes + edges) + discovered endpoints + forms + auth boundaries + parameter classifications — all pre-populated in `app-model.json` before the LLM sees it.
 
-| Tool | What It Does |
-|------|-------------|
-| `browser_start_trace` | Start automatic network request interception — captures URLs, methods, headers, payloads, auth |
-| `browser_stop_trace` | Stop tracing and return entry summary |
-| `browser_get_trace` | View captured trace entries filtered by type |
-| `build_flow_from_trace` | Auto-generate flow model, HAR, Playwright tests from trace data |
+---
 
-### Action Recording & Test Generation
+## App Model (Knowledge Graph)
 
-| Tool | What It Does |
-|------|-------------|
-| `browser_start_recording` | Start recording browser actions (navigate, click, fill) |
-| `browser_stop_recording` | Stop recording and return recorded steps |
-| `browser_get_recording` | View recorded steps without stopping |
-| `generate_playwright_test` | Generate Playwright `.spec.ts` files from recorded session |
+The agent's persistent memory is a structured JSON file (`app-model.json`) with 18 sections:
 
-### Dynamic Sub-Agent Orchestration
+| Section | Purpose |
+|---------|---------|
+| `target` | Target URL |
+| `techStack` | Detected technologies |
+| `auth` | Auth type, login endpoint, cookies, tokens, sessions |
+| `workflow` | Nodes (pages/APIs) + Edges (transitions) — the state machine |
+| `endpoints` | Known API routes with params, methods, response patterns |
+| `forms` | Form inputs found on each page |
+| `scripts` | External JS loaded on pages |
+| `cookies` | Active cookies |
+| `localStorage` | LocalStorage values |
+| `findings` | Vulnerabilities found with structured evidence |
+| `verifications` | Re-run results from `verify` command |
+| `parameterClassifications` | What each parameter is FOR (id, email, price, etc.) |
+| `authBoundaries` | Which URLs require auth, proven by request comparison |
+| `recordedSessions` | Named macros (login flows, multi-step workflows) |
+| `hypotheses` | Things to test next |
+| `nextSteps` | Ordered action plan |
+| `visitedUrls` | URLs already visited |
 
-| Tool | What It Does |
-|------|-------------|
-| `spawn_subagent` | Dynamically create a sub-agent with specific tools and task goal — requires `targetUrl` |
+---
 
-### HTTP Fuzzing & Template Scanning
+## Tools (45 total)
 
-| Tool | What It Does |
-|------|-------------|
-| `http_fuzz` | Fuzz HTTP endpoints with FUZZ keyword placement |
-| `template_scan` | Execute Nuclei-compatible YAML templates |
-| `trivy_scan` | Scan containers, filesystems, K8s for CVEs |
-| `semgrep_scan` | Scan source code with Semgrep SAST rules |
+All tools are payload-in, response-out — the LLM crafts every payload dynamically.
 
-### Network & Infrastructure
+### Browser Tools (19)
 
-| Tool | What It Does |
-|------|-------------|
-| `http_request` | Send HTTP requests with custom method, headers, body |
-| `port_scan` | Scan hosts for open ports with service identification |
+| Tool | Purpose |
+|------|---------|
+| `navigate` | Navigate browser to URL |
+| `click` | Click element on page |
+| `fill` | Fill form field |
+| `press_key` | Send keyboard events |
+| `screenshot` | Capture page screenshot |
+| `extract` | Extract text, HTML, or links |
+| `evaluate` | Execute JS in browser |
+| `get_forms` | Get all forms with fields |
+| `get_cookies` | Get active cookies |
+| `get_scripts` | Get external scripts |
+| `get_storage` | Get localStorage |
+| `close` | Close browser session |
+| `get_page_info` | Get URL, title, readyState, text length, link/form count |
+| `inject_cookie` | Set cookies in browser context |
+| `macro_record_start` | Start recording browser actions |
+| `macro_record_stop` | Stop recording, get steps |
+| `browser_get_recording` | View recording without stopping |
+| `browser_replay_macro` | Replay saved macro steps |
+| `macro_list` | List saved macros |
+
+### Session Recording & Trace (8)
+
+| Tool | Purpose |
+|------|---------|
+| `browser_start_trace` | Start network trace |
+| `browser_stop_trace` | Stop trace, get entries |
+| `browser_get_trace` | View trace entries |
+| `create_browser_session` | Create isolated browser context (multi-role) |
+| `list_browser_sessions` | List all sessions |
+| `save_storage_state` | Save cookies + localStorage to JSON file |
+| `load_storage_state` | Restore cookies + localStorage from JSON file |
+
+### Network (3)
+
+| Tool | Purpose |
+|------|---------|
+| `http_request` | Send arbitrary HTTP request |
+| `port_scan` | Scan for open ports |
 | `header_analyze` | Analyze HTTP security headers |
-| `ssl_check` | Check SSL/TLS configuration |
 
-### Reconnaissance
+### Exploit (2)
 
-| Tool | What It Does |
-|------|-------------|
-| `tech_detect` | Detect technologies, frameworks, servers |
-| `har_analyze` | Analyze HAR files for security issues |
-| `subdomain_enum` | Enumerate subdomains via passive sources |
+| Tool | Purpose |
+|------|---------|
+| `sql_inject` | Send SQL injection payload (LLM-crafted) |
+| `xss_inject` | Send XSS payload (LLM-crafted) |
+
+### Recon (5)
+
+| Tool | Purpose |
+|------|---------|
+| `auth_probe` | Compare response with/without cookies |
+| `subdomain_enum` | Passive subdomain enumeration |
 | `dir_bruteforce` | Discover hidden directories |
-
-### Code Analysis (SAST)
-
-| Tool | What It Does |
-|------|-------------|
-| `pattern_match` | Scan source code for vulnerability patterns |
-| `secrets_scan` | Detect hardcoded secrets |
-| `entry_point_detect` | Identify application entry points |
-| `source_sink_scan` | Map data flow sources to sinks |
-| `finding_verify` | LLM-driven false positive elimination |
-
-### Authentication & Authorization
-
-| Tool | What It Does |
-|------|-------------|
-| `jwt_parse` | Decode and analyze JWT tokens |
-| `jwt_forge` | Forge JWT tokens (alg=none, HS256) |
-| `oauth_audit` | Audit OAuth/OIDC flows |
-| `check_auth_session` | Check if auth session is valid |
-| `exploit_auth_bypass` | Test auth bypass techniques |
-| `exploit_authz` | Test authorization bypass |
-
-### API Security
-
-| Tool | What It Does |
-|------|-------------|
+| `jwt_parse` | Decode JWT tokens |
 | `graphql_introspect` | Query GraphQL introspection |
-| `cors_audit` | Test CORS configuration |
-| `rate_limit_test` | Test API rate limiting |
-| `api_fuzz` | Fuzz API parameters |
 
-### Exploit Testing
+### Knowledge (3)
 
-| Tool | What It Does |
-|------|-------------|
-| `sql_inject` | Test for SQL injection (boolean, UNION, time-based) |
-| `xss_inject` | Test for XSS (reflected, DOM, event handlers) |
+| Tool | Purpose |
+|------|---------|
+| `calculate_risk` | Get risk score from findings |
+| `render_workflow_graph` | See workflow graph as Mermaid diagram |
+| `classify_parameter` | Save parameter purpose classification |
 
-### Post-Exploitation
+### App Model (2)
 
-| Tool | What It Does |
-|------|-------------|
-| `exfiltrate_file` | File exfiltration technique suggestions |
-| `reverse_shell` | Reverse shell technique suggestions |
-| `dump_credentials` | Credential dumping command suggestions |
-
-### OOB (Out-of-Band) Detection
-
-| Tool | What It Does |
-|------|-------------|
-| `oob_trigger` | Generate OOB payloads for blind SSRF, XXE, SQLi |
-| `oob_find` | Check OOB server for incoming callbacks |
-
-### Vulnerability Intelligence
-
-| Tool | What It Does |
-|------|-------------|
-| `cve_lookup` | Look up CVE details from NVD |
-| `dependency_enrich` | Parse lockfiles for CVE analysis |
-
-### Cloud & Infrastructure
-
-| Tool | What It Does |
-|------|-------------|
-| `iam_policy_audit` | Audit AWS IAM policies |
-| `k8s_manifest_audit` | Audit Kubernetes manifests |
-| `tfstate_audit` | Audit Terraform state files |
-
-### Expert Knowledge
-
-| Tool | What It Does |
-|------|-------------|
-| `load_skill` | Load a skill file by name |
-| `search_skills` | Search skill catalog |
-| `list_skills` | List all available skills |
+| Tool | Purpose |
+|------|---------|
+| `read_app_model` | Read a section of the app model |
+| `update_app_model` | Write findings/hypotheses/nodes to the app model |
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  CLI ENTRY POINTS                                                    │
-│  ultimatrix (no args) → gate check → REPL                            │
-│  ultimatrix init      → interactive wizard → writes ultimatrix.yaml   │
-│  ultimatrix scan -t   → AutonomousOrchestrator → live streaming       │
-│  ultimatrix map  -t   → Flow mapping → flow.yaml + HAR + Playwright  │
-│  ultimatrix test -s   → Generate Playwright tests from recording      │
-│  ultimatrix demo      → mock assessment (no API key needed)           │
-│  ultimatrix providers → list LLM providers                            │
-│  ultimatrix tools     → list security tools                           │
-│  ultimatrix agents    → list agent roles                              │
-└──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  CONFIG LAYERING                                                     │
-│  ~/.config$1ultimatrix$1providers.yaml  (secrets, API keys)               │
-│    >  ~/.config$1ultimatrix$1config.yaml (global defaults)                │
-│      >  ./ultimatrix.yaml / ./ultimatrix.json (project config)            │
-│        >  env vars (SENTINEL_PROVIDER, OPENAI_API_KEY, ...)           │
-│          >  CLI flags (-t, --provider, --model)                       │
-└──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  AUTONOMOUS ORCHESTRATOR (scan mode)                                 │
-│                                                                      │
-│  Lead Agent ← model + 50+ tools + spawn_subagent                    │
-│     │                                                                 │
-│     │  spawn_subagent({name, goal, toolNames, targetUrl})             │
-│     ├──► sub-agent 1 (recon)     ── http, tech, dir_bf, browser      │
-│     ├──► sub-agent 2 (sqli)      ── http, sql_inject                 │
-│     ├──► sub-agent 3 (xss)       ── http, xss, browser               │
-│     ├──► sub-agent 4 (api)       ── api_fuzz, graphql, cors          │
-│     ├──► sub-agent 5 (auth)      ── jwt_parse, jwt_forge, oauth      │
-│     └──► sub-agent 6 (report)    ── read_file, write_file            │
-│                                                                      │
-│  • Sub-agents run in parallel when independent                       │
-│  • Each sub-agent gets only relevant tools                           │
-│  • targetUrl is required — no more example.com fallback              │
-│  • Streaming via agent.stream() with streamMode: 'messages'           │
-└──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  LLM PROVIDERS (11 swappable)                                        │
-│  openai │ azure-openai │ openrouter │ anthropic                      │
-│  bedrock │ gemini │ groq │ together │ mistral │ nvidia │ mock        │
-└──────────────────────────────────────────────────────────────────────┘
+assess → [Pre-map Phase] → [Agent Phase] → [Report]
+                        │                 │
+                        ▼                 ▼
+            BFS crawler            LLM single-agent loop
+            Network interception    explore→analyze→attack
+            DOM diffing            50 tool-call budget
+            Auto form filling      Dashboard events
+            Workflow graph build   Auto-report compilation
 ```
+
+- **Single-agent loop:** THREAT_MODEL_PROMPT drives explore→analyze→attack→re-analyze. No sub-agents. Agent reads/writes `app-model.json` via `read_app_model`/`update_app_model` tools.
+- **45 tools** total: browser (19), session/recording/trace (8), network (3), exploit (2), recon (5), knowledge (3), app-model (2), utility (3).
+- **11 LLM providers** via @langchain: OpenAI, Azure, Anthropic, Bedrock, Gemini, Groq, Together, Mistral, NIM, OpenRouter, Mock.
+- **BrowserSession:** Persistent Playwright sessions with `fill()` contenteditable/JS fallback, `pressKey()`, extraction, `addCookie()`, `hasSession()`, `saveStorageState()`/`loadStorageState()`, recording + replay, network trace.
+- **AppModel type** (18 sections): workflow graph, recorded sessions, parameter classifications, auth boundaries, structured evidence, risk scoring, report compilation.
+- **Auto-report:** `compileReport()` generates HTML, JSON, or Markdown from app model findings — even if the LLM never calls `write_file`. Always written after agent completes.
+- **Dashboard:** Optional WebSocket + HTML server (`--dashboard` flag). Streams real-time tool calls, risk changes, status, and errors.
+- **Verification:** `verify` command re-runs findings against a fresh deployment, classifies each as fixed/regressed/unchanged/unknown.
 
 ---
 
 ## Project Structure
 
 ```
-project-sentinal/
-├── src/
-│   ├── cli/               — CLI (index, repl, logger, sarif)
-│   ├── core/              — Types, config, BrowserSession, OOBServer, template engine
-│   ├── providers/         — 11 LLM provider factories
-│   ├── tools/             — 60+ tools + tool-registry + spawn-agent
-│   ├── pipeline/          — AutonomousOrchestrator
-│   └── engine/            — Security engine types
-├── tests/                 — 307 tests mirroring src/
-├── templates/             — Sample Nuclei YAML templates
-├── skills/                — 4 skill files with MITRE mappings
-├── README.md
-└── USAGE.md
-```
-
----
-
-## Configure LLM Provider
-
-```bash
-# Interactive
-ultimatrix init
-
-# Or set env vars
-export SENTINEL_PROVIDER=openai
-export OPENAI_API_KEY=sk-...
-
-# 11 providers available:
-# openai, azure-openai, openrouter, anthropic, bedrock,
-# gemini, groq, together, mistral, nvidia-nim, mock
+src/
+├── cli/               — CLI commands (assess, scan, verify, interact, init)
+├── core/              — AppModel types, BrowserSessionManager, fix-todos middleware
+├── providers/         — 11 LLM provider factories
+├── tools/             — 45 tools + tool-registry
+├── pipeline/          — AutonomousOrchestrator + THREAT_MODEL_PROMPT
+├── explorer/          — Pre-map phase (network-recorder, dom-observer, crawler, workflow-builder)
+├── dashboard/         — WebSocket + HTML live dashboard
+├── ingestion/         — OpenAPI/HAR/Postman/source-code parsers
+├── verification/      — Re-run findings against new deployment
+├── flow/              — Trace-to-HAR converter
+└── agents/            — Agent registry
 ```
 
 ---
@@ -335,7 +257,9 @@ export OPENAI_API_KEY=sk-...
 
 ```bash
 npx vitest run
-# 307 tests, 19 files, 0 failures
+# 306 tests, 19 files, 0 failures
+npx tsc --noEmit       # 0 type errors
+npm run build           # 0 warnings
 ```
 
 ---

@@ -1,6 +1,6 @@
 # Usage Guide
 
-This guide covers practical usage of Project Sentinel for security testing.
+This guide covers practical usage of Ultimatrix for security testing.
 
 ## Table of Contents
 1. [Basic Usage](#basic-usage)

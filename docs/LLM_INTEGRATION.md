@@ -1,6 +1,6 @@
 # LLM Integration Guide
 
-How to configure, switch, and extend LLM providers in Project Sentinel.
+How to configure, switch, and extend LLM providers in Ultimatrix.
 
 ---
 
@@ -87,7 +87,7 @@ export SENTINEL_PROVIDER="anthropic"
 ### Method 3: SDK
 
 ```typescript
-import { createSentinel } from 'project-sentinal';
+import { createSentinel } from 'ultimatrix';
 
 const sentinel = createSentinel({
   provider: 'azure-openai',

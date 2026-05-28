@@ -8,7 +8,7 @@ npm
 ```
 
 ```bash
-cd project-sentinal
+cd ultimatrix
 npm install
 ```
 
@@ -19,119 +19,169 @@ npx tsx src/cli/index.ts init
 ```
 
 Prompts for:
-- LLM provider (openai, anthropic, bedrock, gemini, groq, etc.)
+- LLM provider (openai, anthropic, bedrock, gemini, groq, together, mistral, nvidia, openrouter)
 - API key
+- Model ID
 - Default target URL (optional)
 - Output directory
 
-Writes `ultimatrix.yaml` in the current directory and `~/.config$1ultimatrix$1providers.yaml` for secrets.
+Writes `ultimatrix.yaml` in the current directory and `~/.config/ultimatrix/providers.yaml` for secrets.
 
-## 2. Run Security Scan
+## 2. Run Full Assessment (`assess`)
 
-```bash
-# With setup already done
-npx tsx src/cli/index.ts scan -t https://your-app.com
+Primary entry point. Two-phase operation: automated exploration builds the workflow graph, then the LLM attacks known endpoints.
 
-# Specify output directory
-npx tsx src/cli/index.ts -t https://your-app.com -o ./results
-
-# Using env vars only (no ultimatrix.yaml)
-SENTINEL_PROVIDER=openai OPENAI_API_KEY=sk-... npx tsx src/cli/index.ts scan -t https://your-app.com
-```
-
-### What to Expect
-
-1. CLI checks for provider config — if missing, runs `init` wizard
-2. `Lead agent starting...` is printed
-3. Lead agent spawns sub-agents via `spawn_subagent` with the target URL baked in
-4. Sub-agents run with browser, HTTP, and security tools
-5. Findings stream live as tokens arrive
-6. Final report written to output directory
-
-### With Mock Provider (No API Key)
+### Basic usage
 
 ```bash
-npx tsx src/cli/index.ts scan -t http://localhost:8089 --provider mock
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output
 ```
 
-The mock provider returns canned responses — useful for testing the pipeline boots correctly.
-
-## 3. Map Application Flow
-
-Automatically explores and documents the application via live browser:
+### With automated exploration depth
 
 ```bash
-npx tsx src/cli/index.ts map -t https://your-app.com -o ./flow-output
+# Depth 2 is default. Higher depth = more pages discovered
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output --depth 3
+
+# Skip exploration entirely (fast re-scans against known targets)
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output --skip-explore
 ```
 
-### What it does:
-1. Opens a browser and starts **silent network tracing** — captures every request, response, auth header, and payload
-2. Agent navigates, clicks, fills, and submits forms to explore the app
-3. Agent calls `build_flow_from_trace` which generates:
-   - `flow.yaml` — structured app model (pages, forms, API endpoints, auth)
-   - `flow.json` — same as YAML in JSON format
-   - `session.har` — full HAR file of all captured traffic
-   - `tests/*.spec.ts` — Playwright test files from recorded interactions
-
-### Change Detection (automatic):
-
-Each `map` run auto-saves to `~/.ultimatrix/registry/<app>/`. On subsequent runs, it diffs against the previous model and reports:
-
-```
-+ new page: /api/v2/orders
-- removed: /legacy/checkout
-~ /checkout: auth changed: none → required
-+ new API: POST /api/v2/orders
-↳ impacted: /cart → /api/v2/orders
-```
-
-No flags needed — the registry is automatic and local.
-
-## 4. Interactive REPL
+### With pre-existing artifacts
 
 ```bash
-# Auto-REPL (if no config exists, drops into wizard, then REPL)
-npx tsx src/cli/index.ts
-
-# With specific provider
-npx tsx src/cli/index.ts --provider openai --model gpt-4o
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output \
+  --with-openapi ./api-spec.yaml \
+  --with-har ./session.har \
+  --with-postman ./collection.json \
+  --with-src ./src
 ```
 
-Commands:
-- Type anything — agent responds with tools + thinking
-- `/quit` — exit
+### With live dashboard
 
-## 5. Demo Mode
+```bash
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output \
+  --dashboard --dashboard-port 3000
+```
+
+Open `http://localhost:3000` in a browser to see real-time events.
+
+### What happens
+
+**Phase 1 — Automated Exploration:**
+1. Playwright browser opens and navigates to the target
+2. All HTTP traffic is intercepted via `page.route()` — captures URLs, methods, status, headers, bodies
+3. BFS crawler visits pages, clicks links, fills forms with context-aware test data
+4. DOM snapshots are taken before/after every interaction — hashes compared to detect state changes
+5. Network requests are correlated with DOM transitions to build the workflow graph
+6. Results saved to `./output/explorer/` (nodes, edges, endpoints, auth boundaries, visited URLs)
+
+**Phase 2 — LLM Attack:**
+1. Agent reads the pre-populated app model with workflow graph, endpoints, forms, auth boundaries
+2. Agent probes auth boundaries, classifies parameters, crafts payloads based on parameter types
+3. All findings saved to `app-model.json` with structured evidence
+4. Auto-report compiled to `final-security-report.{html|json|md}`
+
+### Output structure
+
+```
+output/
+├── app-model.json              — 18-section knowledge graph
+├── final-security-report.html  — Assessment report
+├── explorer/
+│   ├── nodes.json              — Workflow nodes discovered
+│   ├── edges.json              — Workflow edges (transitions)
+│   ├── endpoints.json          — API endpoints discovered
+│   ├── auth-boundaries.json    — Auth-required URLs
+│   └── visited-urls.json       — URLs visited during crawl
+```
+
+## 3. Autonomous Scan (`scan`)
+
+Legacy entry point. Checks for existing `app-model.json` and passes it to the agent.
+
+```bash
+npx tsx src/cli/index.ts scan -t https://your-app.com -o ./output
+```
+
+## 4. Verify Findings (`verify`)
+
+Re-runs previous findings against a new deployment to check which vulnerabilities are fixed:
+
+```bash
+npx tsx src/cli/index.ts verify \
+  -a ./output/app-model.json \
+  -t https://new-deployment.com \
+  -o ./verify-output
+```
+
+Output:
+- Each finding classified as `fixed`, `regressed`, `unchanged`, or `unknown`
+- Exit code 1 if any regressions found
+
+## 5. Interactive REPL (`interact`)
+
+Live chat loop with the autonomous agent. Browser + all tools available:
+
+```bash
+npx tsx src/cli/index.ts interact -t https://your-app.com
+```
+
+## 6. Demo Mode
 
 ```bash
 npx tsx src/cli/index.ts demo
 ```
 
-Runs a canned assessment with fake findings — no API key needed.
+Canned assessment with mock findings — no API key needed.
 
-## 6. Explore Tools
+## 7. Explore Tools & Providers
 
 ```bash
 # List all registered tools
 npx tsx src/cli/index.ts tools
 
-# List available providers
+# List tools by category
+npx tsx src/cli/index.ts tools -c browser
+
+# List available LLM providers
 npx tsx src/cli/index.ts providers
+
+# List agent roles
+npx tsx src/cli/index.ts agents
 ```
 
-## 7. Build for Production
+## 8. Build for Production
 
 ```bash
 npm run build
-# Output: dist/index.cjs, dist/cli/index.js
+# Output: dist/index.mjs, dist/cli/index.mjs (ESM)
+#         dist/index.js, dist/cli/index.js (CJS)
 ```
 
-## 8. All Tests
+## 9. Run Tests
 
 ```bash
+# All tests
 npx vitest run
-# 307 tests, 19 files, 0 failures
+
+# Type check
+npx tsc --noEmit
+
+# Build
+npm run build
 ```
+
+**Current status:** 327 tests, 22 files, 0 failures, 0 type errors, 0 build warnings.
+
+## Using Env Vars Only (No Config File)
+
+```bash
+export OPENAI_API_KEY=sk-...
+npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output
+```
+
+Provider auto-detection order: `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `ANTHROPIC_API_KEY` → `AZURE_OPENAI_API_KEY` → `GROQ_API_KEY` → `GEMINI_API_KEY` → `AWS_ACCESS_KEY_ID`
 
 ## Quick Reference
 
@@ -139,13 +189,21 @@ npx vitest run
 |---------|-------------|
 | `npx tsx src/cli/index.ts` | Gate check → REPL |
 | `npx tsx src/cli/index.ts init` | Interactive setup wizard |
-| `npx tsx src/cli/index.ts scan -t <url>` | Autonomous security scan |
-| `npx tsx src/cli/index.ts map -t <url>` | App flow mapping with network trace |
-| `npx tsx src/cli/index.ts map -t <url>` | Map + auto-save to local registry |
-| `npx tsx src/cli/index.ts test -s <session>` | Generate Playwright tests from recording |
+| `npx tsx src/cli/index.ts assess -t <url> -o ./out` | Full assessment (explore + attack) |
+| `npx tsx src/cli/index.ts assess --skip-explore` | Skip pre-map phase |
+| `npx tsx src/cli/index.ts assess --depth 3` | Set crawl depth (default 2) |
+| `npx tsx src/cli/index.ts assess --dashboard` | Live WebSocket dashboard |
+| `npx tsx src/cli/index.ts assess --with-openapi <path>` | Pre-populate from OpenAPI spec |
+| `npx tsx src/cli/index.ts assess --with-har <path>` | Pre-populate from HAR file |
+| `npx tsx src/cli/index.ts assess --with-postman <path>` | Pre-populate from Postman collection |
+| `npx tsx src/cli/index.ts assess --with-src <dir>` | Pre-populate from source code scan |
+| `npx tsx src/cli/index.ts scan -t <url>` | Autonomous pentest (legacy) |
+| `npx tsx src/cli/index.ts verify -a <json> -t <url>` | Verify findings against new deployment |
+| `npx tsx src/cli/index.ts interact -t <url>` | Live REPL chat loop |
 | `npx tsx src/cli/index.ts demo` | Demo with mock findings |
-| `npx tsx src/cli/index.ts tools` | List all security tools |
+| `npx tsx src/cli/index.ts tools` | List security tools |
 | `npx tsx src/cli/index.ts providers` | List LLM providers |
 | `npx tsx src/cli/index.ts agents` | List agent roles |
-| `npx vitest run` | Run all 307 tests |
+| `npx vitest run` | Run all 327 tests |
+| `npx tsc --noEmit` | Type check |
 | `npm run build` | Build dist/ with tsup |

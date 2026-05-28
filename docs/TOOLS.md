@@ -1,6 +1,6 @@
 # Sentinel Security Tools Reference
 
-Complete reference for all 30+ security tools in Project Sentinel. Each tool is a LangChain-compatible function with Zod-validated inputs, designed for AI agent consumption.
+Complete reference for all 30+ security tools in Ultimatrix. Each tool is a LangChain-compatible function with Zod-validated inputs, designed for AI agent consumption.
 
 ---
 

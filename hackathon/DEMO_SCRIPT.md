@@ -1,8 +1,8 @@
-# Project Sentinel — 3-Minute Demo Video Script
+# Ultimatrix — 3-Minute Demo Video Script
 # Microsoft Build AI Hackathon 2026
 
 ## Setup (Before Recording)
-- Have a terminal open in project-sentinal directory
+- Have a terminal open in ultimatrix directory
 - Have the generated HTML report ready to open in browser
 - Have the sample HAR file at sample-data/shop.har
 
@@ -11,7 +11,7 @@
 ## Script (3:00 total)
 
 ### 0:00 - 0:20 | Introduction
-*"Hi, I'm [Name] and this is Project Sentinel — an AI-powered security team-in-a-box. Instead of waiting months for a penetration test, Sentinel learns your application and tests it autonomously with a team of specialized AI agents."*
+*"Hi, I'm [Name] and this is Ultimatrix — an AI-powered security team-in-a-box. Instead of waiting months for a penetration test, Ultimatrix learns your application and tests it autonomously with a team of specialized AI agents."*
 
 ### 0:20 - 0:50 | The Problem & Solution
 *"Traditional security scanners are blind to your app's actual workflows. They fuzz endpoints randomly and produce hundreds of false positives. Sentinel is different — it first learns how your app works by watching real user interactions, then it tests intelligently."*
@@ -48,7 +48,7 @@ npx tsx src/cli/index.ts har sample-data/shop.har
 ### 2:40 - 3:00 | Architecture & Close
 *"Under the hood, Sentinel uses Azure OpenAI GPT-4o for agent reasoning, AutoGen-style multi-agent orchestration with 6 specialized agents, and Playwright for browser automation. It's extensible through MCP — teams can add their own security tools."*
 
-*"Project Sentinel — your security team, automated. Thank you."*
+*"Ultimatrix — your security team, automated. Thank you."*
 
 ---
 

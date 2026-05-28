@@ -1,4 +1,4 @@
-# Getting Started with Project Sentinel
+# Getting Started with Ultimatrix
 
 **AI-powered security team-in-a-box.** Learn your app, generate tests, and find vulnerabilities autonomously.
 
@@ -6,27 +6,13 @@
 
 ## Table of Contents
 
-1. [What is Project Sentinel?](#what-is-project-sentinel)
-2. [Installation](#installation)
-3. [Quick Start — 60 Seconds](#quick-start--60-seconds)
-4. [Configure Your L
- Provider](#configure-your-llm-provider)
-5. [Learn Your Application](#learn-your-application)
-6. [Run a Security Scan](#run-a-security-scan)
-7. [Working with HAR Files](#working-with-har-files)
-8. [Generate Playwright Tests](#generate-playwright-tests)
-9. [CLI Command Reference](#cli-command-reference)
-10. [SDK Usage](#sdk-usage)
-11. [Advanced: Scenario Manifest](#advanced-scenario-manifest)
-12. [Adding Custom Tools](#adding-custom-tools)
-13. [Adding Custom Agents](#adding-custom-agents)
-14. [Troubleshooting](#troubleshooting)
+1. [What is Ultimatrix?](#what-is-ultimatrix)
 
----
+...
 
-## What is Project Sentinel?
+## What is Ultimatrix?
 
-Project Sentinel is an AI-powered security testing platform that works in three phases:
+Ultimatrix is an AI-powered security testing platform that works in three phases:
 
 | Phase | What It Does | Output |
 |-------|-------------|--------|
@@ -59,9 +45,9 @@ Sentinel coordinates 5 specialized security agents:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/project-sentinal.git
-cd project-sentinal
+git clone https://github.com/your-org/ultimatrix.git
 
+cd ultimatrix
 # Install dependencies
 npm install
 ```
@@ -81,7 +67,7 @@ npx tsx src/cli/index.ts demo
 **Output:**
 
 ```
-🛡️  Project Sentinel - Demo Mode
+🛡️  Ultimatrix - Demo Mode
 
 📊 Demo Results:
    Risk Score: 86/100 (CRITICAL)
@@ -451,7 +437,7 @@ test.describe('Login Flow - Security Tests', () => {
 ### Basic Scan
 
 ```typescript
-import { createSentinel } from 'project-sentinal';
+import { createSentinel } from 'ultimatrix';
 
 const sentinel = createSentinel({
   provider: 'azure-openai',
