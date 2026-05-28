@@ -2,94 +2,72 @@ import { createDeepAgent } from 'deepagents';
 import { type BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Logger, colors } from '../cli/logger';
 import { toolRegistry } from '../tools/tool-registry';
-import { createSpawnAgentTool } from '../tools/spawn-agent';
 import { fixWriteTodosMiddleware } from '../core/fix-todos';
 import type { Finding, ScanTarget, ScanEventEmitter } from '../core/types';
 
 const log = new Logger();
 
-function mdToHtml(md: string): string {
-  return md
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>');
+export const THREAT_MODEL_PROMPT = `You are an autonomous security agent with full browser and HTTP tool access. Your mission is to assess the target web application by running an iterative explore → analyze → attack loop with NO human intervention.
+
+Unlike traditional scanners, you do NOT use canned payload lists. You craft every payload based on what you learn about the target.
+
+## How This Works
+
+You have three categories of tools:
+1. **Browser tools** — navigate, click, fill, extract forms/cookies/scripts/storage, evaluate JS, screenshot
+2. **HTTP tools** — http_request, sql_inject, xss_inject (these accept YOUR payloads, not hardcoded lists)
+3. **File tools** — write_todos, write_file, read_file, edit_file
+
+## The Loop (Repeat Until Complete)
+
+### 1. EXPLORE — Learn the target
+- Navigate to the target with browser_navigate
+- Extract all forms, cookies, scripts, and localStorage
+- Read visible page content with browser_extract(type="text")
+- Send http_request to key endpoints to probe tech stack
+- Build a threat model by learning: what framework, what DB, what auth, what endpoints
+
+### 2. ANALYZE — Update your threat model
+Store everything you learn as structured JSON in threat-model.json using write_file:
+{
+  "target": "...",
+  "tech": ["React", "Node.js"],
+  "auth": { "type": "JWT", "endpoints": [] },
+  "endpoints": [{ "path": "/login", "method": "POST", "params": [], "requiresAuth": false }],
+  "findings": [{ "type": "sqli", "endpoint": "/api/users", "param": "id", "evidence": "...", "confidence": "high", "confirmed": false }],
+  "hypotheses": ["PostgreSQL based on error: 'function pg_cURRENT_USER does not exist'"],
+  "next_steps": ["Test UNION injection on /api/users?id="]
 }
 
-export const SKILL_SECTION = `## Skills System
-You have on-demand skill files with expert guidance for every technique:
+### 3. ATTACK — Craft exploits based on your threat model
+- If you found a form with a search field, probe it with XSS payloads YOU craft based on the response
+- If you found an API endpoint with an id parameter, probe it with SQL injection payloads YOU craft
+- If you found a login form, test auth bypass techniques
+- After each payload, READ THE RESPONSE carefully and use it to craft the NEXT payload
+- If a payload errors, analyze the error message — it tells you the database, the framework, or the sanitization
 
-- Use \`list_skills\` to see the full skill catalog
-- Use \`load_skill("name")\` to load a skill's full content into context
-- Use \`search_skills("keyword")\` to find relevant skills
+### 4. RE-ANALYZE — Update your threat model with findings
+- Did the payload reflect? Update your threat model
+- Did you get a timing difference? Note it for time-based blind injection
+- Did you get an error message? It reveals the tech stack — update tech[], hypotheses[], and craft a better payload
 
-Always load relevant skills BEFORE starting a technique. Skills contain exact commands, payloads, and methodology.`;
+### 5. PIVOT — Use findings to discover new attack surface
+- SQLi found an admin session token? Use it to access admin endpoints
+- XSS found in comment form? Check if comments are stored and who views them
+- JWT decoded? Try forging with alg=none
 
-export const ORCHESTRATOR_PROMPT = `You are an autonomous security assessment lead. Your job is to execute a comprehensive security test against the target URL.
+### 6. Repeat until the app is fully mapped and all hypotheses are tested
 
-CRITICAL RULES:
-- You are given a specific target URL. Use THAT URL in all requests. Never use example.com, localhost, or any other URL — only the target you were given.
-- CALL TOOLS IMMEDIATELY. Do not describe what you will do — call tools and do it.
-- ONLY use tools from the list provided to you. Do NOT invent tools.
-- Do NOT output raw XML/HTML like <tool_call> or <function>. Use ONLY the JSON function calling interface.
-- Every message must either be a tool call or a direct result with findings.
+## Critical Rules
 
-## Available Tools
-
-You have two categories of tools:
-1. Core tools (always available): write_todos, write_file, read_file, edit_file
-2. spawn_subagent — creates a specialized sub-agent with specific tools
-
-Use spawn_subagent for ALL actual security work. The sub-agents have all the specialized security testing tools (http_request, sql_inject, xss_inject, tech_detect, subdomain_enum, dir_bruteforce, port_scan, etc.).
-
-## How to Use Sub-Agents
-
-To delegate work, use spawn_subagent. Always include targetUrl:
-
-spawn_subagent({
-  name: "sqli-scanner",
-  goal: "Test login and search forms for SQL injection. Report findings.",
-  targetUrl: "TARGET_URL_HERE",
-})
-
-### CRITICAL: Parallel Spawning
-SPAWN 3-4 SUB-AGENTS IN YOUR VERY FIRST MESSAGE. Do NOT do recon first and then spawn — all phases run in parallel:
-
-spawn_subagent({ name: "recon", goal: "...", targetUrl: "..." })
-spawn_subagent({ name: "vuln-scan", goal: "...", targetUrl: "..." })
-spawn_subagent({ name: "exploit", goal: "...", targetUrl: "..." })
-
-Each sub-agent runs independently and returns findings as the spawn_subagent result. After all sub-agents return, compile their results into a final report and save it to final-security-report.md with write_file.
-
-### Spawning Guidelines
-- **Split by phase**: one agent for recon, one for vuln scanning, one for exploitation
-- **Split by area**: one for web endpoints, one for API, one for infrastructure
-- **Set clear goals** — include what to look for and what output format to use
-- **targetUrl must always be the actual target URL** — never example.com or localhost
-- **Sub-agents return findings as spawn_subagent results** — compile from those
-
-### Tool Parameter Notes
-- write_file requires file_path AND content. Both required.
-- write_todos requires a todos array: [{"content": "...", "status": "pending"}]. NOT flat content/status fields.
-- spawn_subagent requires targetUrl — always pass the real target URL.
-
-## Workflow
-
-YOUR FIRST MESSAGE: spawn 3-4 sub-agents in parallel covering recon + vuln + exploit + report.
-SECOND MESSAGE: after all return, compile their spawn_subagent results into a final report and use write_file to save it to the output directory.
-
-Do NOT do sequential work. Do NOT describe what you will do. CALL TOOLS IMMEDIATELY.`;
-
-interface SubAgentResult {
-  name: string;
-  output: string;
-  tools: string[];
-}
+- NEVER use generic payloads. Craft each payload based on what you learned from the previous response.
+- If a SQLi payload returns an error message mentioning "PostgreSQL", your next payload should use PostgreSQL syntax.
+- If an XSS payload is HTML-encoded, try an attribute-breaking payload instead.
+- If a request takes 5+ seconds, the payload may have worked — investigate with evidence extraction.
+- After every 3-4 attack attempts, step back and update threat-model.json with what you've learned.
+- When you have enough evidence for a finding, save it to findings section in the threat model.
+- STOP only when you've tested all hypotheses and the threat model covers the full app surface.
+- FINAL STEP: compile everything into a comprehensive report using write_file.`;
 
 export class AutonomousOrchestrator {
   private model: BaseChatModel;
@@ -112,10 +90,6 @@ export class AutonomousOrchestrator {
     this.format = config.format || 'markdown';
   }
 
-  private getAllTools() {
-    return toolRegistry.getAll();
-  }
-
   async run(): Promise<{ findings: Finding[]; reportPath: string }> {
     const fs = require('fs');
     const path = require('path');
@@ -124,54 +98,65 @@ export class AutonomousOrchestrator {
 
     const targetUrl = typeof this.target === 'string' ? this.target : (this.target as any).url || String(this.target);
 
-    const spawnTool = createSpawnAgentTool(this.model);
-    const leadTools = [spawnTool];
+    const allTools = toolRegistry.getByTags(['browser', 'http', 'network', 'exploit', 'recon']);
+    // Also add http_request, file tools
+    const httpTool = toolRegistry.get('http_request');
+    const sqlTool = toolRegistry.get('sql_inject');
+    const xssTool = toolRegistry.get('xss_inject');
+    const writeTodos = toolRegistry.get('write_todos');
+    const writeFile = toolRegistry.get('write_file');
+    const readFile = toolRegistry.get('read_file');
+    const editFile = toolRegistry.get('edit_file');
+    const extras = [httpTool, sqlTool, xssTool, writeTodos, writeFile, readFile, editFile].filter(Boolean) as any[];
+    const allToolsWithFile = [...allTools, ...extras];
 
-    let prompt = ORCHESTRATOR_PROMPT;
+    let prompt = THREAT_MODEL_PROMPT;
     prompt += `\n\nTarget URL: ${targetUrl}`;
     prompt += `\nOutput directory: ${this.outputDir}`;
-    prompt += `\n\nWrite all sub-agent results to ${this.outputDir}/subagent-<name>.txt using write_file, and compile the final report to ${this.outputDir}/final-security-report.md.`;
+    prompt += `\n\nInitialize your threat model at ${this.outputDir}/threat-model.json using write_file.`;
+    prompt += `\nSave the final report to ${this.outputDir}/final-security-report.${this.format === 'html' ? 'html' : this.format === 'json' ? 'json' : 'md'} when complete.`;
 
-    const leadAgent = createDeepAgent({
+    const agent = createDeepAgent({
       model: this.model,
-      tools: leadTools,
+      tools: allToolsWithFile,
       middleware: [fixWriteTodosMiddleware],
       systemPrompt: prompt,
     });
 
-    log.info('Lead agent starting...');
-    if (this.events) this.events.pipelineStatus('Lead agent orchestrating assessment', 0);
+    log.info('Autonomous assessment starting...');
+    if (this.events) this.events.pipelineStatus('Exploring and assessing target autonomously', 0);
 
-    const subAgentResults: SubAgentResult[] = [];
+    process.stdout.write(colors.dim('Autonomous agent running... (this will take several minutes)\n'));
 
     try {
-      process.stdout.write(colors.dim('Assessment running...\n'));
-
-      const stream = await leadAgent.stream(
+      const stream = await agent.stream(
         {
           messages: [{
             role: 'user',
-            content: `Begin a full security assessment of ${targetUrl}. Use spawn_subagent to create specialized sub-agents for each phase (recon → vuln → exploit → report). After all sub-agents return, compile their results into a final report and use write_file to save it to ${this.outputDir}/final-security-report.md.`,
+            content: `Begin autonomous security assessment of ${targetUrl}. 
+            
+1. First, navigate to the target and explore — extract forms, cookies, scripts, tech stack.
+2. Build your threat model at ${this.outputDir}/threat-model.json.
+3. Dynamically probe each finding with crafted payloads.
+4. Pivot based on what you discover.
+5. When done, compile the final report to ${this.outputDir}/final-security-report.${this.format === 'html' ? 'html' : this.format === 'json' ? 'json' : 'md'}.
+
+You have full browser and HTTP access. No human will intervene. Go.`,
           }],
         },
         { streamMode: 'messages', subgraphs: true },
       );
 
-      for await (const [namespace, chunk] of stream) {
-        const isSubagent = namespace.some((s: string) => s.startsWith('tools:'));
+      for await (const [, chunk] of stream) {
         const msg = chunk?.[0];
         if (!msg) continue;
-
-        if (msg.text) {
-          const prefix = isSubagent ? colors.dim(`[sub] `) : '';
-          process.stdout.write(`${prefix}${msg.text}`);
-        }
+        if (msg.text) process.stdout.write(msg.text);
 
         const tcChunks = (msg as any).tool_call_chunks;
         if (tcChunks?.length) {
           for (const tc of tcChunks) {
             if (tc.name) {
-              process.stdout.write(colors.dim(`\n→ ${tc.name}(${tc.args || ''})\n`));
+              process.stdout.write(colors.dim(`\n→ ${tc.name}\n`));
             }
           }
         }
@@ -180,18 +165,7 @@ export class AutonomousOrchestrator {
           const result = msg.content;
           const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
           if (resultStr?.trim()) {
-            process.stdout.write(colors.dim(`  ↳ ${resultStr.slice(0, 500)}\n`));
-            // Capture full sub-agent reports (not truncated)
-            if (resultStr.includes('## Sub-Agent Report:')) {
-              const nameMatch = resultStr.match(/## Sub-Agent Report: (.+)/);
-              const toolsMatch = resultStr.match(/\*\*Tools granted:\*\*\n([\s\S]*?)(?:\n\n|\*\*Output:\*\*)/);
-              const outputMatch = resultStr.match(/\*\*Output:\*\*\n([\s\S]*)/);
-              subAgentResults.push({
-                name: nameMatch?.[1] || 'unknown',
-                output: outputMatch?.[1]?.trim() || resultStr.slice(0, 5000),
-                tools: toolsMatch?.[1]?.split('\n').map(l => l.replace(/^\s*-\s*/, '').split(':')[0].trim()).filter(Boolean) || [],
-              });
-            }
+            process.stdout.write(colors.dim(`  [${resultStr.replace(/\n/g, ' ').slice(0, 300).trim()}]\n`));
           }
         }
       }
@@ -199,52 +173,11 @@ export class AutonomousOrchestrator {
       process.stdout.write('\n');
       log.success('Assessment complete');
     } catch (e) {
-      log.warn(`Lead agent error: ${e instanceof Error ? e.message : String(e)}`);
+      log.warn(`Agent error: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const ext = this.format === 'html' ? 'html' : this.format === 'json' ? 'json' : 'md';
     const reportPath = path.join(this.outputDir, `final-security-report.${ext}`);
-
-    // Build a structured report, not raw LLM text
-    const header = `# Security Assessment Report\n\n**Target:** ${targetUrl}\n**Date:** ${new Date().toISOString().split('T')[0]}\n**Format:** ${this.format}\n\n`;
-
-    if (subAgentResults.length > 0) {
-      const body = subAgentResults.map(sa => [
-        `## ${sa.name}`,
-        `**Tools used:** ${sa.tools.join(', ')}`,
-        ``,
-        sa.output,
-      ].join('\n')).join('\n\n---\n\n');
-
-      const fullReport = header + body;
-
-      if (this.format === 'html') {
-        const templatePath = path.join(__dirname, 'report-template.html');
-        let template = fs.readFileSync(templatePath, 'utf-8');
-        const sectionsHtml = subAgentResults.map(sa => {
-          const toolsHtml = sa.tools.map((t: string) => `<code>${t}</code>`).join(' ');
-          return `<section><h2>🔍 ${sa.name}</h2><div class="tools">Tools: ${toolsHtml}</div><div class="output">${mdToHtml(sa.output)}</div></section>`;
-        }).join('\n');
-        template = template.replace('{{targetUrl}}', targetUrl).replace('{{date}}', new Date().toISOString().split('T')[0]).replace('{{sections}}', sectionsHtml);
-        fs.writeFileSync(reportPath, template, 'utf-8');
-      } else if (this.format === 'json') {
-        const json = JSON.stringify({
-          target: targetUrl,
-          date: new Date().toISOString().split('T')[0],
-          subAgents: subAgentResults.map(sa => ({
-            name: sa.name,
-            tools: sa.tools,
-            output: sa.output,
-          })),
-        }, null, 2);
-        fs.writeFileSync(reportPath, json, 'utf-8');
-      } else {
-        fs.writeFileSync(reportPath, header + body, 'utf-8');
-      }
-    } else {
-      // Fallback: write whatever text was captured
-      fs.writeFileSync(reportPath, header + 'No findings were captured.', 'utf-8');
-    }
 
     return { findings: [], reportPath };
   }

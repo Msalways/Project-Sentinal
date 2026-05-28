@@ -303,6 +303,56 @@ export class BrowserSessionManager {
     return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
   }
 
+  async extractForms(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const forms = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('form')).map((f, i) => ({
+        index: i,
+        action: (f as HTMLFormElement).action || f.getAttribute('action') || '',
+        method: ((f as HTMLFormElement).method || f.getAttribute('method') || 'GET').toUpperCase(),
+        fields: Array.from(f.querySelectorAll('input, textarea, select, button')).map((el) => ({
+          name: (el as HTMLInputElement).name || '',
+          type: (el as HTMLInputElement).type || el.tagName.toLowerCase(),
+          placeholder: (el as HTMLInputElement).placeholder || '',
+          required: (el as HTMLInputElement).required || false,
+          value: (el as HTMLInputElement).value || '',
+        })),
+      }))
+    );
+    return JSON.stringify(forms, null, 2);
+  }
+
+  async getCookies(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const cookies = await page.context().cookies();
+    return JSON.stringify(cookies.map(c => ({ name: c.name, value: c.value.slice(0, 40), domain: c.domain, path: c.path, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite })), null, 2);
+  }
+
+  async getLocalStorage(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const result = await page.evaluate(() => {
+      const items: Record<string, string> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) items[k] = localStorage.getItem(k) || '';
+      }
+      return items;
+    });
+    return JSON.stringify(result, null, 2);
+  }
+
+  async getScripts(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const scripts = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('script[src]')).map(s => ({
+        src: (s as HTMLScriptElement).src,
+        async: (s as HTMLScriptElement).async,
+        defer: (s as HTMLScriptElement).defer,
+      }))
+    );
+    return JSON.stringify(scripts, null, 2);
+  }
+
   async close(sessionId: string): Promise<void> {
     const state = this.sessions.get(sessionId);
     if (!state) return;

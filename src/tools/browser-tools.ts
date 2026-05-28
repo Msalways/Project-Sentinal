@@ -130,6 +130,50 @@ export function createBrowserEvaluateTool(): DynamicStructuredTool {
   });
 }
 
+export function createBrowserGetFormsTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    return getBrowserManager().extractForms(sessionId);
+  }, {
+    name: 'browser_get_forms',
+    description: 'Extract all forms from the current page with fields, actions, and methods',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserGetCookiesTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    return getBrowserManager().getCookies(sessionId);
+  }, {
+    name: 'browser_get_cookies',
+    description: 'Get all cookies for the current page context',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserGetScriptsTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    return getBrowserManager().getScripts(sessionId);
+  }, {
+    name: 'browser_get_scripts',
+    description: 'List all external scripts loaded on the current page',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserGetStorageTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    return getBrowserManager().getLocalStorage(sessionId);
+  }, {
+    name: 'browser_get_storage',
+    description: 'Get all localStorage entries for the current page origin',
+    schema: SessionIdSchema,
+  });
+}
+
 export function createBrowserCloseTool(): DynamicStructuredTool {
   return tool(async (input) => {
     const { sessionId } = input;

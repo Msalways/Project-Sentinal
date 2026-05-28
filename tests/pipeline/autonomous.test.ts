@@ -6,25 +6,18 @@ describe('AutonomousOrchestrator', () => {
     expect(mod.AutonomousOrchestrator).toBeDefined();
   });
 
-  it('should export ORCHESTRATOR_PROMPT with spawn_subagent guidance', async () => {
+  it('should export THREAT_MODEL_PROMPT with explore/analyze/attack guidance', async () => {
     const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.ORCHESTRATOR_PROMPT).toBeDefined();
-    expect(typeof mod.ORCHESTRATOR_PROMPT).toBe('string');
-    expect(mod.ORCHESTRATOR_PROMPT).toContain('spawn_subagent');
-    expect(mod.ORCHESTRATOR_PROMPT).toContain('targetUrl');
+    expect(mod.THREAT_MODEL_PROMPT).toBeDefined();
+    expect(typeof mod.THREAT_MODEL_PROMPT).toBe('string');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('EXPLORE');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('ANALYZE');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('ATTACK');
   });
 
-  it('should export SKILL_SECTION constant', async () => {
+  it('THREAT_MODEL_PROMPT should include threat-model.json guidance', async () => {
     const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.SKILL_SECTION).toBeDefined();
-    expect(typeof mod.SKILL_SECTION).toBe('string');
-  });
-
-  it('ORCHESTRATOR_PROMPT should include targetUrl guidance', async () => {
-    const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.ORCHESTRATOR_PROMPT).toContain('targetUrl');
-    expect(mod.ORCHESTRATOR_PROMPT).toContain('How to Use Sub-Agents');
-    expect(mod.ORCHESTRATOR_PROMPT).toContain('TARGET_URL_HERE');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('threat-model.json');
   });
 
   it('AutonomousOrchestrator should construct with model, target, outputDir', async () => {

