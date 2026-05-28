@@ -5,6 +5,7 @@ import os from 'os';
 import { select, input, confirm, password } from '@inquirer/prompts';
 import { providerRegistry, type ProviderConfig } from '../providers/provider-registry';
 import { toolRegistry } from '../tools/tool-registry';
+import { readAppModel, writeAppModel, type AppModel, type AppModelEndpoint, type AppModelFormField } from '../core/app-model';
 import { agentRegistry } from '../agents/agent-registry';
 import type { LLMProviderName, ScanTarget } from '../core/types';
 import yaml from 'js-yaml';
@@ -91,17 +92,19 @@ program
 
     const model = await loadModel(config);
     const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
+    const outputDir = config.output?.dir || opts.output || './output';
+    const appModelPath = path.join(outputDir, 'app-model.json');
     const orchestrator = new AutonomousOrchestrator({
       model,
       target: { url: config.scan?.target || opts.target } as ScanTarget,
-      outputDir: config.output?.dir || opts.output || './output',
+      outputDir,
       format: config.output?.format || opts.format || 'markdown',
+      appModelPath,
     });
 
     const result = await orchestrator.run();
 
-    const fs = await import('fs');
-    if (fs.existsSync(result.reportPath)) {
+    if (result.reportPath && fs.existsSync(result.reportPath)) {
       log.success(`Assessment complete. Report: ${result.reportPath}`);
     } else {
       log.warn('Assessment finished but no report file was generated.');
@@ -114,9 +117,154 @@ program
     process.exit(0);
   });
 
-// ── map: Two-phase app flow mapping ──
+// ── assess: LLM-driven security assessment ──
 program
-  .command('map')
+  .command('assess')
+  .description('LLM-driven security assessment — agent navigates, explores, and attacks autonomously')
+  .option('-t, --target <url>', 'Target URL')
+  .option('-o, --output <dir>', 'Output directory', './assess-output')
+  .option('--headless', 'Run browser in headless mode')
+  .option('--provider <provider>', 'LLM provider')
+  .option('--model <model>', 'Model ID')
+  .option('--format <format>', 'Report format (html, json, markdown)')
+  .option('--dashboard', 'Start live WebSocket dashboard during assessment')
+  .option('--dashboard-port <port>', 'Dashboard port', '3000')
+  .option('--with-openapi <path>', 'Path to OpenAPI/Swagger spec to pre-populate endpoints')
+  .option('--with-har <path>', 'Path to HAR file to pre-populate endpoints and cookies')
+  .option('--with-postman <path>', 'Path to Postman collection to pre-populate endpoints')
+  .option('--with-src <path>', 'Path to source code directory to scan for routes and tech stack')
+  .option('--depth <n>', 'Max crawl depth for auto-exploration (default 2, 0 to disable)', '2')
+  .option('--skip-explore', 'Skip automated workflow exploration phase')
+  .action(async (opts) => {
+    if (!opts.target) { log.error('No target specified. Use -t <url>'); process.exit(1); }
+
+    const outDir = path.resolve(opts.output);
+    fs.mkdirSync(outDir, { recursive: true });
+    const target = opts.target.replace(/\/$/, '');
+    const appModelPath = path.join(outDir, 'app-model.json');
+
+    // ── Ingest artifacts if provided ──
+    const hasArtifacts = opts.withOpenapi || opts.withHar || opts.withPostman || opts.withSrc;
+    let initialModel: Partial<import('../core/app-model').AppModel> = {};
+    if (hasArtifacts) {
+      log.header('Ingesting artifacts', target);
+      const { ingestAll } = await import('../ingestion');
+      initialModel = ingestAll({
+        openapi: opts.withOpenapi,
+        har: opts.withHar,
+        postman: opts.withPostman,
+        sourceDir: opts.withSrc,
+      }, target);
+      log.info(`Ingested: ${initialModel.endpoints?.length || 0} endpoints, ${Object.keys(initialModel.cookies || {}).length} cookies, ${initialModel.techStack?.length || 0} tech stack items`);
+    }
+
+    // ── Create initial app model ──
+    const model = {
+      target,
+      techStack: initialModel.techStack || [],
+      auth: { type: 'unknown' as const, loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
+      workflow: { nodes: [], edges: [] },
+      endpoints: initialModel.endpoints || [],
+      forms: initialModel.forms || [],
+      scripts: [],
+      cookies: initialModel.cookies || {},
+      localStorage: {},
+      findings: [],
+      verifications: [],
+      parameterClassifications: [],
+      authBoundaries: [],
+      recordedSessions: {},
+      hypotheses: initialModel.hypotheses || [],
+      nextSteps: initialModel.nextSteps || ['Navigate to target', 'Build workflow graph', 'Record login flows', 'Probe auth boundaries', 'Classify parameters', 'Test hypotheses'],
+      visitedUrls: initialModel.visitedUrls || [],
+    };
+    writeAppModel(appModelPath, model);
+    log.info(`App model initialized: ${appModelPath}`);
+
+    // ── Start dashboard if requested ──
+    let dashboard: import('../dashboard/server').DashboardServer | undefined;
+    let stopDashboard: (() => void) | undefined;
+    if (opts.dashboard) {
+      const { startDashboard } = await import('../dashboard/server');
+      const dashboardPort = parseInt(opts.dashboardPort, 10) || 3000;
+      const server = startDashboard(dashboardPort);
+      dashboard = server;
+      stopDashboard = server.close;
+      log.info(`Dashboard: http://localhost:${server.port}`);
+    }
+
+    // ── Automated exploration phase ──
+    const crawlDepth = parseInt(opts.depth, 10) || 0;
+    if (!opts.skipExplore && crawlDepth > 0) {
+      log.header('Exploration Phase', 'Auto-mapping workflow graph');
+      const { getSharedBrowserManager } = await import('../tools/browser-tools');
+      const mgr = getSharedBrowserManager(opts.headless);
+      const { runExploration } = await import('../explorer');
+      const explored = await runExploration({
+        target,
+        browserManager: mgr,
+        outputDir: outDir,
+        maxDepth: crawlDepth,
+        maxPages: 30,
+        onProgress: (msg: string) => log.dim(`  ${msg}`),
+      });
+      // Merge exploration data into app model
+      const appModel = readAppModel(appModelPath);
+      appModel.workflow = { nodes: explored.workflow.nodes, edges: explored.workflow.edges };
+      appModel.endpoints = [...(appModel.endpoints || []), ...explored.endpoints];
+      appModel.forms = [...(appModel.forms || []), ...explored.forms];
+      appModel.authBoundaries = [...(appModel.authBoundaries || []), ...explored.authBoundaries];
+      appModel.visitedUrls = [...(appModel.visitedUrls || []), ...explored.visitedUrls];
+      appModel.parameterClassifications = [...(appModel.parameterClassifications || []), ...explored.parameterClassifications];
+      if (explored.techStack.length > 0) appModel.techStack = [...new Set([...appModel.techStack, ...explored.techStack])];
+      if (explored.auth.loginEndpoint && !appModel.auth.loginEndpoint) appModel.auth.loginEndpoint = explored.auth.loginEndpoint;
+      if (explored.hypotheses.length > 0) appModel.hypotheses = [...new Set([...appModel.hypotheses, ...explored.hypotheses])];
+      writeAppModel(appModelPath, appModel);
+      log.success(`Workflow graph: ${explored.workflow.nodes.length} nodes, ${explored.workflow.edges.length} edges, ${explored.endpoints.length} endpoints`);
+    }
+
+    // ── Launch agent ──
+    log.header('Assessment', `${target}`);
+    if (opts.skipExplore || crawlDepth === 0) {
+      log.info('LLM-driven mode: agent navigates, explores, and attacks autonomously');
+    } else {
+      log.info('LLM-driven mode: agent starts with pre-mapped workflow graph and attacks known endpoints');
+    }
+
+    const config = await loadRuntimeConfig({ ...opts });
+    const chatModel = await loadModel(config);
+    const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
+    const orchestrator = new AutonomousOrchestrator({
+      model: chatModel,
+      target: { url: target } as ScanTarget,
+      outputDir: outDir,
+      format: opts.format || 'html',
+      appModelPath,
+      dashboard,
+    });
+
+    const result = await orchestrator.run();
+
+    if (stopDashboard) stopDashboard();
+
+    if (fs.existsSync(result.reportPath)) {
+      log.success(`Assessment complete. Report: ${result.reportPath}`);
+    } else {
+      log.warn('Assessment finished but no report file was generated.');
+    }
+
+    log.divider();
+    log.header('Output', `Artifacts in ${outDir}`);
+    log.dim(`  app-model.json — session knowledge graph`);
+    log.dim(`  final-security-report.${opts.format || 'html'} — assessment results`);
+
+    await new Promise((r) => setTimeout(r, 500));
+    process.exit(0);
+  });
+
+// ── learn: Two-phase app flow mapping ──
+program
+  .command('learn')
   .description('Phase 1: auto-crawl all routes. Phase 2: interactive user workflow recording — generates site-map, HAR, Playwright tests')
   .option('-t, --target <url>', 'Target URL')
   .option('-o, --output <dir>', 'Output directory', './flow-output')
@@ -410,6 +558,40 @@ program
 
     log.success(`Generated ${generated.length} Playwright test files:`);
     for (const f of generated) log.dim(`  ${f}`);
+  });
+
+// ── verify: Re-run findings against a new deployment ──
+program
+  .command('verify')
+  .description('Re-run previous findings against a new target deployment to check which vulnerabilities are fixed')
+  .option('-a, --app-model <path>', 'Path to existing app-model.json from a previous assessment')
+  .option('-t, --target <url>', 'New target URL to verify against')
+  .option('-o, --output <dir>', 'Output directory', './verify-output')
+  .option('--timeout <ms>', 'Request timeout in ms', '10000')
+  .action(async (opts) => {
+    if (!opts.appModel || !opts.target) {
+      log.error('Both --app-model and --target are required.');
+      log.info('  ultimatrix verify -a ./assess-output/app-model.json -t https://new-deployment.com');
+      process.exit(1);
+    }
+    const outDir = path.resolve(opts.output);
+    fs.mkdirSync(outDir, { recursive: true });
+    log.header('Verification', `Re-running findings against ${opts.target}`);
+
+    const { verifyFindings } = await import('../verification');
+    const result = await verifyFindings(opts.appModel, opts.target, outDir, { timeout: parseInt(opts.timeout, 10) || 10000 });
+
+    log.divider();
+    log.header('Results', `${result.summary.total} findings verified`);
+    log.info(`  ${result.summary.fixed} fixed`);
+    log.info(`  ${result.summary.regressed} regressed`);
+    log.info(`  ${result.summary.unchanged} unchanged`);
+
+    if (result.summary.regressed > 0) {
+      log.warn(`⚠️ ${result.summary.regressed} finding(s) regressed. Check verified-findings.json for details.`);
+    }
+    log.dim(`Full results: ${path.join(outDir, 'verified-findings.json')}`);
+    process.exit(result.summary.regressed > 0 ? 1 : 0);
   });
 
 program.parse();

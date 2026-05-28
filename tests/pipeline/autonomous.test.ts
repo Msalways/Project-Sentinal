@@ -15,9 +15,13 @@ describe('AutonomousOrchestrator', () => {
     expect(mod.THREAT_MODEL_PROMPT).toContain('ATTACK');
   });
 
-  it('THREAT_MODEL_PROMPT should include threat-model.json guidance', async () => {
+  it('THREAT_MODEL_PROMPT should include app model tools guidance', async () => {
     const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('threat-model.json');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('{appModelPath}');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('read_app_model');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('update_app_model');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('endpoints');
+    expect(mod.THREAT_MODEL_PROMPT).toContain('findings');
   });
 
   it('AutonomousOrchestrator should construct with model, target, outputDir', async () => {

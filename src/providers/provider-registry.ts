@@ -104,7 +104,7 @@ providerRegistry.register({
       configuration: {
         baseURL: 'https://openrouter.ai/api/v1',
         defaultHeaders: {
-          'HTTP-Referer': 'https://project-sentinal.dev',
+          'HTTP-Referer': 'https://ultimatrix.dev',
           'X-Title': 'Ultimatrix',
         },
       },

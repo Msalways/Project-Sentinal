@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import { BrowserSessionManager } from '../core/browser-session';
 import { u } from './tool-registry';
+import { readAppModelSection, updateAppModelSection } from '../core/app-model';
 
 let _browserManager: BrowserSessionManager | null = null;
 export function getSharedBrowserManager(headless?: boolean): BrowserSessionManager {
@@ -183,6 +184,147 @@ export function createBrowserCloseTool(): DynamicStructuredTool {
     name: 'browser_close',
     description: 'Close a browser session and release all resources',
     schema: SessionIdSchema,
+  });
+}
+
+export function createBrowserReplayMacroTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, name, appModelPath } = z.object({
+      sessionId: z.string().default('default'),
+      name: z.string().describe('Name of the recorded macro to replay from app model recordedSessions'),
+      appModelPath: z.string().describe('Path to the app model JSON file containing recordedSessions'),
+    }).parse(input);
+    const sessions = readAppModelSection(appModelPath, 'recordedSessions') as Record<string, any>;
+    const steps = sessions?.[name];
+    if (!steps || !Array.isArray(steps)) return `No recorded session named "${name}" found in app model. Use macro_list to see available macros.`;
+    const result = await getBrowserManager().replayMacro(sessionId, steps as any);
+    return JSON.stringify(result, null, 2);
+  }, {
+    name: 'browser_replay_macro',
+    description: 'Replay a named recorded macro on a browser session. Reads steps from app model\'s recordedSessions section.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      name: z.string().describe('Name of the recorded macro to replay'),
+      appModelPath: z.string().describe('Path to app model JSON file'),
+    }),
+  });
+}
+
+export function createMacroListTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { appModelPath } = z.object({
+      appModelPath: z.string().describe('Path to the app model JSON file'),
+    }).parse(input);
+    const sessions = readAppModelSection(appModelPath, 'recordedSessions') as Record<string, any>;
+    const names = Object.keys(sessions || {});
+    if (names.length === 0) return 'No recorded macros found in app model.';
+    const details = names.map((n) => `- ${n}: ${sessions[n].length} steps`).join('\n');
+    return `Recorded macros:\n${details}`;
+  }, {
+    name: 'macro_list',
+    description: 'List all named recorded macros saved in the app model\'s recordedSessions section.',
+    schema: z.object({
+      appModelPath: z.string().describe('Path to app model JSON file'),
+    }),
+  });
+}
+
+export function createInjectCookieTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, name, value, url } = z.object({
+      sessionId: z.string().default('default'),
+      name: z.string().describe('Cookie name'),
+      value: z.string().describe('Cookie value'),
+      url: z.string().optional().describe('URL scope for the cookie (defaults to current page URL)'),
+    }).parse(input);
+    return getBrowserManager().addCookie(sessionId, name, value, url);
+  }, {
+    name: 'inject_cookie',
+    description: 'Set a cookie in the browser context. Useful for injecting auth tokens or session cookies discovered via app model.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      name: z.string().describe('Cookie name'),
+      value: z.string().describe('Cookie value'),
+      url: z.string().optional().describe('URL to scope the cookie to (defaults to current page URL)'),
+    }),
+  });
+}
+
+export function createCreateBrowserSessionTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, label, userAgent } = z.object({
+      sessionId: z.string().describe('Unique name for the new browser session'),
+      label: z.string().optional().describe('Human-readable label (e.g. "admin-user", "anonymous")'),
+      userAgent: z.string().optional().describe('Custom user agent string'),
+    }).parse(input);
+    await getBrowserManager().getOrCreate(sessionId, { label, userAgent });
+    return `Created browser session "${sessionId}"${label ? ` (${label})` : ''}. Use browser_navigate(sessionId="${sessionId}") to navigate.`;
+  }, {
+    name: 'create_browser_session',
+    description: 'Create a named browser session with optional label and user agent. Sessions are isolated (separate cookies, storage, and browser context). Use this for multi-role testing (e.g. create "admin" and "user" sessions).',
+    schema: z.object({
+      sessionId: z.string().describe('Unique session name'),
+      label: z.string().optional().describe('Human-readable label'),
+      userAgent: z.string().optional().describe('Custom user agent'),
+    }),
+  });
+}
+
+export function createListBrowserSessionsTool(): DynamicStructuredTool {
+  return tool(async () => {
+    const mgr = getBrowserManager();
+    const ids = mgr.listSessions();
+    if (ids.length === 0) return 'No active browser sessions.';
+    const lines = ids.map((id) => {
+      const info = mgr.getSessionInfo(id);
+      if (!info) return `- ${id} (no info)`;
+      return `- ${id}${info.label ? ` (${info.label})` : ''} — ${info.url} [created ${info.createdAt}]`;
+    });
+    return `Active sessions:\n${lines.join('\n')}`;
+  }, {
+    name: 'list_browser_sessions',
+    description: 'List all active browser sessions with their labels, current URLs, and creation times.',
+    schema: z.object({}),
+  });
+}
+
+export function createSaveStorageStateTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, name, outputDir } = z.object({
+      sessionId: z.string().default('default').describe('Browser session to save'),
+      name: z.string().describe('Name for this saved state (e.g. "admin-logged-in")'),
+      outputDir: z.string().describe('Output directory to save session files'),
+    }).parse(input);
+    const filePath = require('path').join(outputDir, 'sessions', `${name}.json`);
+    return getBrowserManager().saveStorageState(sessionId, filePath);
+  }, {
+    name: 'save_storage_state',
+    description: 'Save the current browser session state (cookies + localStorage) to a file. Use this after logging in so you can restore the session later with load_storage_state.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      name: z.string().describe('Name for the saved state'),
+      outputDir: z.string().describe('Output directory'),
+    }),
+  });
+}
+
+export function createLoadStorageStateTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId, name, outputDir } = z.object({
+      sessionId: z.string().default('default').describe('Browser session to restore into'),
+      name: z.string().describe('Name of the saved state to load'),
+      outputDir: z.string().describe('Output directory containing session files'),
+    }).parse(input);
+    const filePath = require('path').join(outputDir, 'sessions', `${name}.json`);
+    return getBrowserManager().loadStorageState(sessionId, filePath);
+  }, {
+    name: 'load_storage_state',
+    description: 'Restore a previously saved browser session state (cookies + localStorage). Use this to re-authenticate without going through the login flow.',
+    schema: z.object({
+      sessionId: z.string().default('default'),
+      name: z.string().describe('Name of the saved state to load'),
+      outputDir: z.string().describe('Output directory'),
+    }),
   });
 }
 

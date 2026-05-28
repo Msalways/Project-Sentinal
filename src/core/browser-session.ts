@@ -1,4 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import fs from 'fs';
+import path from 'path';
 
 export interface TraceEntry {
   type: 'navigation' | 'xhr' | 'fetch' | 'form' | 'resource' | 'script';
@@ -38,6 +40,8 @@ interface SessionState {
   createdAt: number;
   trace: TraceEntry[];
   tracing: boolean;
+  label?: string;
+  userAgent?: string;
 }
 
 export class BrowserSessionManager {
@@ -49,7 +53,7 @@ export class BrowserSessionManager {
     this.headless = headless;
   }
 
-  async getOrCreate(sessionId: string): Promise<Page> {
+  async getOrCreate(sessionId: string, options?: { label?: string; userAgent?: string; viewport?: { width: number; height: number } }): Promise<Page> {
     const existing = this.sessions.get(sessionId);
     if (existing) {
       try {
@@ -75,8 +79,8 @@ export class BrowserSessionManager {
       ],
     });
     const context = await browser.newContext({
-      viewport: { width: 1280, height: 720 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      viewport: options?.viewport || { width: 1280, height: 720 },
+      userAgent: options?.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
       locale: 'en-US',
       timezoneId: 'America/New_York',
       geolocation: { latitude: 40.7128, longitude: -74.006 },
@@ -92,7 +96,7 @@ export class BrowserSessionManager {
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     });
 
-    this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false });
+    this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false, label: options?.label, userAgent: options?.userAgent });
     return page;
   }
 
@@ -353,6 +357,13 @@ export class BrowserSessionManager {
     return JSON.stringify(scripts, null, 2);
   }
 
+  async addCookie(sessionId: string, name: string, value: string, url?: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const cookieUrl = url || page.url();
+    await page.context().addCookies([{ name, value, url: cookieUrl, httpOnly: false, secure: false, sameSite: 'Lax' as const }]);
+    return `Cookie "${name}" set for ${cookieUrl}`;
+  }
+
   async close(sessionId: string): Promise<void> {
     const state = this.sessions.get(sessionId);
     if (!state) return;
@@ -368,6 +379,61 @@ export class BrowserSessionManager {
 
   listSessions(): string[] {
     return Array.from(this.sessions.keys());
+  }
+
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
+  async saveStorageState(sessionId: string, filePath: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const cookies = await page.context().cookies();
+    const storageItems = await page.evaluate(() => {
+      const items: Record<string, string> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) items[k] = localStorage.getItem(k) || '';
+      }
+      return items;
+    });
+    const state = { cookies, localStorage: storageItems, savedAt: Date.now(), url: page.url() };
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+    return `Saved storage state (${cookies.length} cookies, ${Object.keys(storageItems).length} localStorage items) to ${filePath}`;
+  }
+
+  async loadStorageState(sessionId: string, filePath: string): Promise<string> {
+    if (!fs.existsSync(filePath)) return `Storage state file not found: ${filePath}`;
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const page = await this.getOrCreate(sessionId);
+    if (state.cookies?.length) {
+      await page.context().addCookies(state.cookies.map((c: any) => ({
+        name: c.name, value: c.value, domain: c.domain, path: c.path,
+        httpOnly: c.httpOnly ?? false, secure: c.secure ?? false, sameSite: c.sameSite || 'Lax',
+      })));
+    }
+    if (state.localStorage) {
+      await page.evaluate((items) => {
+        for (const [k, v] of Object.entries(items)) {
+          localStorage.setItem(k, v as string);
+        }
+      }, state.localStorage);
+    }
+    return `Loaded storage state (${state.cookies?.length || 0} cookies, ${Object.keys(state.localStorage || {}).length} localStorage items) from ${filePath}`;
+  }
+
+  getSessionInfo(sessionId: string): Record<string, unknown> | null {
+    const state = this.sessions.get(sessionId);
+    if (!state) return null;
+    return {
+      id: sessionId,
+      label: state.label || null,
+      userAgent: state.userAgent || null,
+      createdAt: new Date(state.createdAt).toISOString(),
+      url: state.page.url(),
+      tracing: state.tracing,
+      traceLength: state.trace.length,
+    };
   }
 
   async replayMacro(sessionId: string, steps: MacroStep[]): Promise<MacroResult> {
