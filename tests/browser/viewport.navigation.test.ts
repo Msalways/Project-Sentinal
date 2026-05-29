@@ -1,12 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fc from 'fast-check';
 import http from 'http';
+import { chromium } from 'playwright';
 import { Viewport } from '../../src/browser/viewport';
 
 const TEST_PORT = 19000;
 const TEST_BASE = `http://localhost:${TEST_PORT}`;
 
 let server: http.Server;
+
+// Skip all tests if Playwright browser is not installed (e.g. CI without npx playwright install)
+let hasBrowser = false;
+try {
+  chromium.executablePath();
+  hasBrowser = true;
+} catch { /* browser not installed */ }
+
+export const describeIf = hasBrowser ? describe : describe.skip;
 
 beforeAll(async () => {
   await new Promise<void>((resolve) => {
@@ -59,7 +69,7 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-describe('Viewport navigation tracking', () => {
+describeIf('Viewport navigation tracking', () => {
   it('captures requests from subsequent pages after navigation', async () => {
     const viewport = new Viewport({ headless: true });
     await viewport.launch();
