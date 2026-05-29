@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fc from 'fast-check';
 import http from 'http';
+import fs from 'fs';
 import { chromium } from 'playwright';
 import { Viewport } from '../../src/browser/viewport';
 
@@ -12,8 +13,7 @@ let server: http.Server;
 // Skip all tests if Playwright browser is not installed (e.g. CI without npx playwright install)
 let hasBrowser = false;
 try {
-  chromium.executablePath();
-  hasBrowser = true;
+  hasBrowser = fs.existsSync(chromium.executablePath());
 } catch { /* browser not installed */ }
 
 export const describeIf = hasBrowser ? describe : describe.skip;
