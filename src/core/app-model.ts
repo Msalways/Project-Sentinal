@@ -134,6 +134,15 @@ export interface AppModel {
   hypotheses: string[];
   nextSteps: string[];
   visitedUrls: string[];
+  oastCallbacks: Array<{ uuid: string; url: string; timestamp: number; method: string }>;
+  coverage: Array<{
+    endpoint: string;
+    method: string;
+    param: string;
+    status: 'tested' | 'skipped';
+    reason: string;
+    timestamp: number;
+  }>;
 }
 
 export type AppModelSection = keyof AppModel;
@@ -156,6 +165,8 @@ const DEFAULT_MODEL: AppModel = {
   hypotheses: [],
   nextSteps: ['Navigate to target', 'Build workflow graph', 'Discover auth boundaries', 'Classify parameters', 'Probe for vulnerabilities'],
   visitedUrls: [],
+  oastCallbacks: [],
+  coverage: [],
 };
 
 export function readAppModel(modelPath: string): AppModel {
@@ -414,4 +425,157 @@ function deepMerge(target: any, source: any): any {
     }
   }
   return result;
+}
+
+export interface FormattedCrawlContext {
+  summary: string;
+  isPrivateApp: boolean;
+  privateAppReason: string;
+}
+
+export function formatAppModelContext(model: AppModel): FormattedCrawlContext {
+  const lines: string[] = [];
+  const nodes = model.workflow?.nodes || [];
+  const edges = model.workflow?.edges || [];
+  const endpoints = model.endpoints || [];
+  const forms = model.forms || [];
+  const auth = model.auth;
+  const tech = model.techStack || [];
+  const params = model.parameterClassifications || [];
+  const boundaries = model.authBoundaries || [];
+  const visited = model.visitedUrls || [];
+
+  // Detect private app
+  let isPrivateApp = false;
+  let privateAppReason = '';
+
+  if (visited.length <= 1 && endpoints.length === 0) {
+    isPrivateApp = true;
+    privateAppReason = 'Crawl discovered 0–1 pages and no endpoints — likely behind authentication';
+  } else if (nodes.length <= 1 && forms.length === 0) {
+    isPrivateApp = true;
+    privateAppReason = 'No workflow nodes or forms found — target may require login';
+  } else if (auth.type !== 'none' && visited.length <= 2) {
+    isPrivateApp = true;
+    privateAppReason = `Auth type "${auth.type}" detected but only ${visited.length} pages crawled — login wall blocking exploration`;
+  }
+
+  if (isPrivateApp) {
+    lines.push(`⚠️  PRIVATE APP DETECTED — ${privateAppReason}`);
+    lines.push('');
+    lines.push('The automated spider could not discover routes because the app likely requires authentication.');
+    lines.push('Options to proceed:');
+    if (auth.loginEndpoint) lines.push(`  • Login endpoint found: ${auth.loginEndpoint} — use browser to authenticate manually`);
+    lines.push('  • Record a login session using /record in REPL or learn command');
+    lines.push('  • Upload app specs: --with-openapi <file>, --with-har <file>, --with-postman <file>');
+    lines.push('  • In the agent: navigate to login page, fill credentials manually via browser_session_fill');
+    lines.push('');
+  }
+
+  // ── Target overview ──
+  lines.push(`Target: ${model.target}`);
+  if (tech.length > 0) lines.push(`Tech stack: ${tech.join(', ')}`);
+  lines.push(`Auth: ${auth.type}${auth.loginEndpoint ? ` (login: ${auth.loginEndpoint})` : ''}`);
+  lines.push('');
+
+  // ── Workflow graph ──
+  if (nodes.length > 0) {
+    lines.push(`\nWorkflow Graph — ${nodes.length} nodes, ${edges.length} edges:`);
+    for (const n of nodes.slice(0, 20)) {
+      const authTag = n.authRequired ? ' 🔒' : '';
+      lines.push(`  · ${n.title || n.url} [${n.type}]${authTag}`);
+    }
+    if (nodes.length > 20) lines.push(`  ... and ${nodes.length - 20} more nodes`);
+    if (edges.length > 0) {
+      lines.push(`\nTransitions (sample):`);
+      for (const e of edges.slice(0, 10)) {
+        const from = nodes.find(n => n.id === e.fromId)?.title || e.fromId;
+        const to = nodes.find(n => n.id === e.toId)?.title || e.toId;
+        lines.push(`  ${from} → ${to} [${e.trigger}]`);
+      }
+      if (edges.length > 10) lines.push(`  ... and ${edges.length - 10} more transitions`);
+    }
+  }
+
+  // ── Endpoints ──
+  if (endpoints.length > 0) {
+    lines.push(`\nAPI Endpoints (${endpoints.length}):`);
+    for (const ep of endpoints.slice(0, 25)) {
+      const authTag = ep.requiresAuth ? ' 🔒' : '';
+      const params = ep.params?.length > 0 ? ` params: ${ep.params.map(p => p.name).join(', ')}` : '';
+      lines.push(`  ${ep.method.toUpperCase()} ${ep.path} → ${ep.responseStatus}${authTag}${params}`);
+    }
+    if (endpoints.length > 25) lines.push(`  ... and ${endpoints.length - 25} more endpoints`);
+  }
+
+  // ── Forms ──
+  if (forms.length > 0) {
+    lines.push(`\nForms (${forms.length}):`);
+    for (const f of forms.slice(0, 15)) {
+      const fields = f.fields.map(fi => `${fi.name}[${fi.type}]`).join(', ');
+      lines.push(`  · ${f.pageUrl} → ${f.action} (${fields})`);
+    }
+    if (forms.length > 15) lines.push(`  ... and ${forms.length - 15} more forms`);
+  }
+
+  // ── Parameter classifications ──
+  if (params.length > 0) {
+    const byType: Record<string, string[]> = {};
+    for (const p of params) {
+      (byType[p.classifiedAs] ||= []).push(p.paramName);
+    }
+    lines.push(`\nParameter classifications:`);
+    for (const [type, names] of Object.entries(byType)) {
+      lines.push(`  · ${type}: ${names.join(', ')}`);
+    }
+  }
+
+  // ── Auth boundaries ──
+  const authUrls = boundaries.filter(b => b.requiresAuth);
+  const publicUrls = boundaries.filter(b => !b.requiresAuth);
+  if (authUrls.length > 0) {
+    lines.push(`\nAuth boundaries — ${authUrls.length} protected, ${publicUrls.length} public:`);
+    for (const b of authUrls.slice(0, 10)) {
+      lines.push(`  🔒 ${b.method.toUpperCase()} ${b.url}`);
+    }
+    for (const b of publicUrls.slice(0, 5)) {
+      lines.push(`  🔓 ${b.method.toUpperCase()} ${b.url}`);
+    }
+  }
+
+  // ── Findings summary ──
+  const findings = model.findings || [];
+  if (findings.length > 0) {
+    const bySev: Record<string, number> = {};
+    for (const f of findings) {
+      bySev[f.severity] = (bySev[f.severity] || 0) + 1;
+    }
+    lines.push(`\nExisting findings (${findings.length}):`);
+    for (const [sev, count] of Object.entries(bySev)) {
+      lines.push(`  · ${sev}: ${count}`);
+    }
+  }
+
+  // ── Coverage ──
+  const coverage = model.coverage || [];
+  const tested = coverage.filter(c => c.status === 'tested').length;
+  const skipped = coverage.filter(c => c.status === 'skipped').length;
+  if (coverage.length > 0) {
+    lines.push(`\nCoverage: ${tested} tested, ${skipped} skipped`);
+  }
+
+  // ── Visited URLs ──
+  if (visited.length > 0) {
+    lines.push(`\nVisited URLs (${visited.length}):`);
+    for (const url of visited.slice(0, 20)) {
+      lines.push(`  · ${url}`);
+    }
+    if (visited.length > 20) lines.push(`  ... and ${visited.length - 20} more`);
+  }
+
+  return {
+    summary: lines.join('\n'),
+    isPrivateApp,
+    privateAppReason,
+  };
 }

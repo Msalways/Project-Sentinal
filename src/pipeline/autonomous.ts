@@ -3,11 +3,12 @@ import { type BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { Logger, colors } from '../cli/logger';
 import { toolRegistry } from '../tools/tool-registry';
 import { fixWriteTodosMiddleware } from '../core/fix-todos';
-import { readAppModel, compileReport, calculateOverallRisk } from '../core/app-model';
+import { readAppModel, compileReport, calculateOverallRisk, formatAppModelContext } from '../core/app-model';
 import type { Finding, ScanTarget, ScanEventEmitter } from '../core/types';
 import { getSharedBrowserManager } from '../tools/browser-tools';
 import type { DashboardServer } from '../dashboard/server';
 import type { DashboardEvent } from '../dashboard/server';
+import { ensureOastRunning, stopOast } from '../oast';
 
 const log = new Logger();
 const MAX_TOOL_CALLS = 50;
@@ -65,6 +66,38 @@ Your job shifts from "blind explorer" to "targeted attacker":
 
 You do NOT need to re-click every link or re-submit every form. The crawler already did that. Use your tool calls to attack, not to re-discover.
 
+## Out-of-Band Detection (OAST)
+
+An OAST callback server is running on this machine. Use it to detect blind vulnerabilities:
+
+1. **oast_create_url** — generates a unique URL like http://localhost:PORT/UUID. Use this URL in blind payloads (XSS, SSRF, SQLi with external callback, XXE, etc.)
+2. **oast_check** — checks if any callback was received. Pass the UUID to check a specific URL, or call without UUID to see all callbacks.
+
+Example workflow:
+- Call oast_create_url → get a URL
+- Inject the URL into a payload (e.g., <img src="OAST_URL"> for blind XSS)
+- Send the payload
+- Call oast_check to see if the target fetched your URL
+
+A callback proves the target executed your payload — this is high-confidence evidence.
+
+## Coverage Tracking
+
+Use **record_coverage** to track what you've tested. After probing an endpoint or parameter, record whether it was tested or skipped and why. This helps you:
+- See what you've covered vs. what's remaining
+- Know why something was skipped (auth required, not applicable, etc.)
+- Generate a coverage summary in the final report
+
+## Finding Triage
+
+When you write findings to the app model, include structured evidence (screenshots, raw responses, HAR entries). The pipeline runs an automatic triage pass after you finish that:
+- Rejects findings with no evidence
+- Deduplicates by (type, endpoint, param)
+- Adjusts severity and confidence based on evidence quality
+- Marks speculative critical/high findings for downgrade
+
+Write your findings with as much evidence as possible for the best triage outcome.
+
 Use **read_app_model** to read a section (don't read the whole file — read only what you need).
 Use **update_app_model** to write findings, hypotheses, workflow nodes/edges, and new endpoints as you discover them.
 Use **classify_parameter** to classify parameter purpose — this tells you what attack strategy to use.
@@ -78,6 +111,16 @@ When you encounter a multi-step workflow that you may need to repeat (especially
 3. macro_record_stop — returns the recorded steps. Save them to the app model with:
    update_app_model(path="{appModelPath}", section="recordedSessions", data={"login": [steps...]}, merge=true)
 4. Later, browser_replay_macro(sessionId="default", name="login", appModelPath="{appModelPath}") to replay
+
+## Manual Recording Mode
+If you encounter complex workflows (MFA, SSO, custom JS forms, CAPTCHA) that you cannot automate, use:
+1. manual_record_start — opens a visible browser window and tells the human to interact directly
+2. The human clicks, types, and navigates in the browser — every action is captured as a macro step
+3. manual_record_stop — returns the captured steps
+4. Save to app model with update_app_model(section="recordedSessions", data={"flow-name": [steps...]}, merge=true)
+5. Replay with browser_replay_macro(name="flow-name", ...)
+
+This is for complex human-only workflows. Prefer macro_record_start for things you can do yourself.
 
 ## Proving Auth Boundaries
 auth_probe(url, sessionId) fetches the URL both with and without current browser cookies, then tells you if the responses differ (indicating auth protection). Use this to classify every discovered endpoint as requiresAuth:true or false.
@@ -210,6 +253,16 @@ export class AutonomousOrchestrator {
     const reportPath = pth.join(this.outputDir, `final-security-report.${fmt}`);
 
     try {
+      // ── Start OAST callback server ──
+      let oastPort: number | null = null;
+      try {
+        oastPort = await ensureOastRunning();
+        log.info(`OAST server running on port ${oastPort}`);
+        this.emitDashboardEvent('status', { message: `OAST server on port ${oastPort}` });
+      } catch (e) {
+        log.warn(`OAST server failed to start: ${e}`);
+      }
+
       // All tools are registered with normalized tags — getAll() returns everything
       const allTools = toolRegistry.getAll();
 
@@ -220,10 +273,30 @@ export class AutonomousOrchestrator {
       prompt += `\n\nTarget URL: ${targetUrl}`;
       prompt += `\nOutput directory: ${this.outputDir}`;
       prompt += `\nApp model path: ${this.appModelPath}`;
+      if (oastPort) {
+        prompt += `\n\nOAST callback server is running on port ${oastPort}. Use oast_create_url to get a unique URL for blind payloads.`;
+      }
 
       const modelExists = fsp.existsSync(this.appModelPath);
       if (modelExists) {
         prompt += `\n\nIMPORTANT: An app model already exists at ${this.appModelPath}. Start by reading it with read_app_model(path="${this.appModelPath}"). Do NOT re-discover what's already known — build on what's there.`;
+
+        // Inject formatted crawl context as a concise overview
+        try {
+          const appModel = readAppModel(this.appModelPath);
+          const ctx = formatAppModelContext(appModel);
+          prompt += `\n\n## Crawl Results Summary\n${ctx.summary}`;
+
+          if (ctx.isPrivateApp) {
+            prompt += `\n\n⚠️  NOTE: ${ctx.privateAppReason}`;
+            prompt += `\nOptions:`;
+            if (appModel.auth.loginEndpoint) {
+              prompt += `\n- A login endpoint was detected at ${appModel.auth.loginEndpoint}. Try navigating there, filling credentials, and authenticating.`;
+            }
+            prompt += `\n- If you can't access pages due to auth, switch to attack mode: probe the login form, test for auth bypass, or ask the human to record a login session via /record.`;
+            prompt += `\n- You can also ingest app specs: the operator can re-run with --with-openapi <file>, --with-har <file>, or --with-postman <file>.`;
+          }
+        } catch { /* best-effort context injection */ }
       }
 
       const agent = createDeepAgent({
@@ -313,8 +386,37 @@ You have ${MAX_TOOL_CALLS} tool calls maximum. If the workflow graph is pre-popu
       const risk = calculateOverallRisk(appModel);
       this.emitDashboardEvent('risk_change', { score: risk.score, level: risk.level, breakdown: risk.breakdown });
 
+      // ── Run independent triage on all findings ──
+      if (appModel.findings.length > 0) {
+        log.info(`Running triage on ${appModel.findings.length} findings...`);
+        this.emitDashboardEvent('status', { message: 'Running finding triage' });
+        const { triageFinding, applyTriageToFindings } = await import('../triage');
+        const decisions = appModel.findings.map(f => triageFinding(f, []));
+        const triaged = applyTriageToFindings(appModel.findings, decisions);
+        const removed = appModel.findings.length - triaged.length;
+        if (removed > 0) {
+          log.info(`Triage: ${removed} finding(s) removed/rejected, ${triaged.length} accepted`);
+          appModel.findings = triaged;
+          fsp.writeFileSync(this.appModelPath, JSON.stringify(appModel, null, 2));
+        }
+        const rejected = decisions.filter(d => d.status === 'rejected').map(d => `  - ${d.candidateId}: ${d.reason}`).join('\n');
+        if (rejected) log.dim(`Rejected:\n${rejected}`);
+        const downgraded = decisions.filter(d => d.status === 'downgraded').map(d => `  - ${d.candidateId}: ${d.reason}`).join('\n');
+        if (downgraded) log.dim(`Downgraded:\n${downgraded}`);
+      }
+
+      // ── Add OAST stats to coverage report ──
+      let oastSummary = '';
+      try {
+        const { getOastServer } = await import('../oast');
+        const stats = getOastServer().getStats();
+        if (stats.totalCallbacks > 0) {
+          oastSummary = `\n\n**OAST Callbacks**: ${stats.totalCallbacks} callbacks across ${stats.uniqueUuids} unique URLs`;
+        }
+      } catch { /* best effort */ }
+
       const report = compileReport(appModel, this.format as any);
-      fsp.writeFileSync(reportPath, report);
+      fsp.writeFileSync(reportPath, report + oastSummary);
       log.success(`Report written: ${reportPath}`);
 
       if (stoppedEarly) {

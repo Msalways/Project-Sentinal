@@ -122,7 +122,7 @@ program
   .command('assess')
   .description('LLM-driven security assessment — agent navigates, explores, and attacks autonomously')
   .option('-t, --target <url>', 'Target URL')
-  .option('-o, --output <dir>', 'Output directory', './assess-output')
+  .option('-o, --output <dir>', 'Output directory', './output')
   .option('--headless', 'Run browser in headless mode')
   .option('--provider <provider>', 'LLM provider')
   .option('--model <model>', 'Model ID')
@@ -177,6 +177,8 @@ program
       hypotheses: initialModel.hypotheses || [],
       nextSteps: initialModel.nextSteps || ['Navigate to target', 'Build workflow graph', 'Record login flows', 'Probe auth boundaries', 'Classify parameters', 'Test hypotheses'],
       visitedUrls: initialModel.visitedUrls || [],
+      oastCallbacks: [],
+      coverage: [],
     };
     writeAppModel(appModelPath, model);
     log.info(`App model initialized: ${appModelPath}`);
@@ -221,6 +223,29 @@ program
       if (explored.hypotheses.length > 0) appModel.hypotheses = [...new Set([...appModel.hypotheses, ...explored.hypotheses])];
       writeAppModel(appModelPath, appModel);
       log.success(`Workflow graph: ${explored.workflow.nodes.length} nodes, ${explored.workflow.edges.length} edges, ${explored.endpoints.length} endpoints`);
+
+      // Private app detection
+      const { formatAppModelContext } = await import('../core/app-model');
+      const ctx = formatAppModelContext(readAppModel(appModelPath));
+      if (ctx.isPrivateApp) {
+        log.warn(`Private app detected — ${ctx.privateAppReason}`);
+        log.info('');
+        log.info('Options:');
+        log.dim('  1. Continue anyway — agent will try to discover routes and handle auth');
+        log.dim('  2. Run interactively instead: ultimatrix interact -t <url>');
+        log.dim('     Then use /record to record a login session');
+        log.dim('  3. Upload app specs:');
+        log.dim('     ultimatrix assess -t <url> --with-openapi ./spec.yaml');
+        log.dim('     ultimatrix assess -t <url> --with-har ./session.har');
+        log.dim('     ultimatrix assess -t <url> --with-postman ./collection.json');
+        log.info('');
+        const { confirm } = await import('@inquirer/prompts');
+        const proceed = await confirm({ message: 'Continue assessment anyway?', default: true });
+        if (!proceed) {
+          log.info('Stopping. Re-run with --with-openapi, --with-har, or use `ultimatrix interact` for manual flow.');
+          process.exit(0);
+        }
+      }
     }
 
     // ── Launch agent ──
@@ -267,7 +292,7 @@ program
   .command('learn')
   .description('Phase 1: auto-crawl all routes. Phase 2: interactive user workflow recording — generates site-map, HAR, Playwright tests')
   .option('-t, --target <url>', 'Target URL')
-  .option('-o, --output <dir>', 'Output directory', './flow-output')
+  .option('-o, --output <dir>', 'Output directory', './output')
   .option('--headless', 'Run browser in headless mode')
   .option('--depth <n>', 'Crawl depth (default 2)', '2')
   .option('--provider <provider>', 'LLM provider')
@@ -351,8 +376,10 @@ program
       middleware: [fixWriteTodosMiddleware],
       systemPrompt: `You are recording a user workflow on ${target}. The browser already has an open session.
 
-Available routes discovered during crawl:
-${crawlResult.routes.map((r) => `  ${r.path} — ${r.title}`).join('\n')}
+Discovered routes (${crawlResult.routes.length}):
+${crawlResult.routes.map((r) => `  ${r.path} — ${r.title} (${r.forms} forms, ${r.linkCount} links)`).join('\n')}
+
+${crawlResult.routes.length <= 1 ? '⚠️  Few routes discovered — this may be a private app behind login. Ask the user to navigate to the login page and authenticate.\n' : ''}
 
 RULES:
 1. The browser is already on a page. Check the current URL before navigating — only navigate if the user explicitly wants a different page.
@@ -367,12 +394,41 @@ RULES:
     const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: chalk.cyan('> ') });
 
     rl.write(`Session ready. ${crawlResult.totalRoutes} routes crawled. Type actions or /close.\n`);
+    rl.write(`  /close       — finish and generate Playwright test file\n`);
+    rl.write(`  /record start — start manual browser recording\n`);
+    rl.write(`  /record stop  — stop recording and merge steps\n`);
     rl.prompt();
 
     for await (const line of rl) {
       const input = line.trim();
       if (input === '/close' || input === '/quit') break;
       if (!input) { rl.prompt(); continue; }
+
+      // ── Manual recording in learn phase ──
+      if (input.startsWith('/record')) {
+        const sub = input.split(/\s+/)[1] || 'start';
+        if (sub === 'start') {
+          await mgr.startManualRecording('default');
+          log.info('Manual recording started. Interact with the visible browser directly. Type /record stop when done.');
+        } else if (sub === 'stop') {
+          const steps = await mgr.stopManualRecording('default');
+          if (steps.length > 0) {
+            log.success(`Captured ${steps.length} manual steps.`);
+            const summary = steps.map((s, i) => `  ${i + 1}. ${s.type}${s.selector ? ` → ${s.selector}` : ''}${s.value ? ` = "${s.value.slice(0, 60)}"` : ''}${s.url ? ` → ${s.url}` : ''}`).join('\n');
+            console.log(summary);
+            // Merge into recording
+            const existing = mgr.getRecording('default');
+            for (const s of steps) existing.push(s);
+          } else {
+            log.warn('No manual steps captured.');
+          }
+        } else {
+          const steps = mgr.getRecording('default');
+          log.info(`Manual recording active: ${steps.length} steps so far.`);
+        }
+        rl.prompt();
+        continue;
+      }
 
       const stream = await agent.stream(
         { messages: [{ role: 'user', content: input }] },
@@ -405,41 +461,13 @@ RULES:
       const { traceToHar: toHar } = await import('../flow/build-from-trace');
       fs.writeFileSync(path.join(outDir, 'user-session.har'), toHar(userTrace));
     }
-    const flowPath = path.join(outDir, 'user-flow.spec.ts');
-    const lines: string[] = [];
-    lines.push(`import { test, expect } from '@playwright/test';`);
-    lines.push(``);
-    lines.push(`// Auto-generated user flow — ${target}`);
-    lines.push(`// Crawled ${crawlResult.totalRoutes} routes, ${userSteps.length} user actions`);
-    lines.push(`// ${new Date().toISOString()}`);
-    lines.push(``);
-    lines.push(`test.describe('User Workflow', () => {`);
-    for (let i = 0; i < userSteps.length; i++) {
-      const s = userSteps[i];
-      lines.push(`  test('step ${i + 1}', async ({ page }) => {`);
-      switch (s.type) {
-        case 'navigate':
-          lines.push(`    await page.goto('${s.url}');`);
-          break;
-        case 'click': {
-          const sel = (s.selector || '').replace(/'/g, "\\'");
-          lines.push(`    await page.locator('${sel}').click();`);
-          break;
-        }
-        case 'fill': {
-          const sel = (s.selector || '').replace(/'/g, "\\'");
-          const val = (s.value || '').replace(/'/g, "\\'");
-          lines.push(`    await page.locator('${sel}').fill('${val}');`);
-          break;
-        }
-        default:
-          lines.push(`    // ${s.type} — not captured`);
-      }
-      lines.push(`  });`);
-      lines.push(``);
-    }
-    lines.push(`});`);
-    fs.writeFileSync(flowPath, lines.join('\n'), 'utf-8');
+    const { generatePlaywrightTest } = await import('../flow/generate-test');
+    const { filePath: flowPath } = generatePlaywrightTest({
+      steps: userSteps,
+      target,
+      outputDir: outDir,
+      totalRoutes: crawlResult.totalRoutes,
+    });
 
     log.success(`User flow recorded: ${userSteps.length} actions → ${flowPath}`);
     await spider.close();
@@ -459,7 +487,7 @@ RULES:
 program
   .command('demo')
   .description('Run demo assessment (no API key needed)')
-  .option('-o, --output <dir>', 'Output directory', './demo-output')
+  .option('-o, --output <dir>', 'Output directory', './output')
   .action(async (opts) => {
     const { createUltimatrix } = await import('../index');
     const ultimatrix = createUltimatrix({ provider: 'mock', apiKey: 'mock' });
@@ -512,6 +540,22 @@ program
     }
   });
 
+// ── interact: Live REPL chat loop ──
+program
+  .command('interact')
+  .description('Live REPL chat loop with the autonomous agent. Type /record start for manual browser recording.')
+  .option('-t, --target <url>', 'Target URL')
+  .action(async (opts) => {
+    const config = await loadRuntimeConfig({ ...opts });
+    const model = await loadModel(config);
+    const { startRepl } = await import('./repl');
+    await startRepl({
+      model,
+      targetUrl: opts.target || '',
+      outputDir: config.output?.dir || './output',
+    });
+  });
+
 // ── test: Generate Playwright tests from recorded browser sessions ──
 program
   .command('test')
@@ -540,9 +584,9 @@ program
         test: {
           happy: steps.map(s => {
             switch (s.type) {
-              case 'navigate': return `Navigate to ${s.url}`;
-              case 'click': return `Click ${s.selector}`;
-              case 'fill': return `Fill ${s.selector} with "${s.value}"`;
+              case 'navigate': return `NAV|${s.url}`;
+              case 'click': return `CLI|${s.selector}`;
+              case 'fill': return `FIL|${s.selector}|${s.value}`;
               default: return `${s.type}: ${JSON.stringify(s)}`;
             }
           }),
