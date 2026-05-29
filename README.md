@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
 [![45 Tools](https://img.shields.io/badge/Tools-45-brightgreen.svg)](#tools)
 [![11 Providers](https://img.shields.io/badge/LLM%20Providers-11-blueviolet.svg)](#configure-llm-provider)
-[![306 Tests](https://img.shields.io/badge/Tests-306%20passing-success.svg)](#testing)
+[![327 Tests](https://img.shields.io/badge/Tests-327%20passing-success.svg)](#testing)
 
 ---
 
@@ -74,7 +74,9 @@ Replays exact same payloads against a fresh target, classifies each finding as f
 ultimatrix verify -a ./output/app-model.json -t https://new-deployment.com
 ```
 
-### `interact` — Live REPL chat loop
+### `interact` — Live REPL chat loop with manual recording
+
+Start a chat session with the LLM agent. Use `/record start` to toggle manual browser interaction — the visible Playwright window opens so you can click, type, and navigate directly. Type `/record stop` when done to save captured steps to the app model for later replay.
 
 ```bash
 ultimatrix interact -t https://target.com
@@ -132,7 +134,7 @@ The agent's persistent memory is a structured JSON file (`app-model.json`) with 
 
 All tools are payload-in, response-out — the LLM crafts every payload dynamically.
 
-### Browser Tools (19)
+### Browser Tools (21)
 
 | Tool | Purpose |
 |------|---------|
@@ -150,11 +152,13 @@ All tools are payload-in, response-out — the LLM crafts every payload dynamica
 | `close` | Close browser session |
 | `get_page_info` | Get URL, title, readyState, text length, link/form count |
 | `inject_cookie` | Set cookies in browser context |
-| `macro_record_start` | Start recording browser actions |
+| `macro_record_start` | Start recording browser actions (LLM-driven) |
 | `macro_record_stop` | Stop recording, get steps |
 | `browser_get_recording` | View recording without stopping |
 | `browser_replay_macro` | Replay saved macro steps |
 | `macro_list` | List saved macros |
+| `manual_record_start` | Start recording DIRECT human browser interactions (visible window) |
+| `manual_record_stop` | Stop manual recording, return captured steps |
 
 ### Session Recording & Trace (8)
 
@@ -224,9 +228,9 @@ assess → [Pre-map Phase] → [Agent Phase] → [Report]
 ```
 
 - **Single-agent loop:** THREAT_MODEL_PROMPT drives explore→analyze→attack→re-analyze. No sub-agents. Agent reads/writes `app-model.json` via `read_app_model`/`update_app_model` tools.
-- **45 tools** total: browser (19), session/recording/trace (8), network (3), exploit (2), recon (5), knowledge (3), app-model (2), utility (3).
+- **47 tools** total: browser (21), session/recording/trace (8), network (3), exploit (2), recon (5), knowledge (3), app-model (2), utility (3).
 - **11 LLM providers** via @langchain: OpenAI, Azure, Anthropic, Bedrock, Gemini, Groq, Together, Mistral, NIM, OpenRouter, Mock.
-- **BrowserSession:** Persistent Playwright sessions with `fill()` contenteditable/JS fallback, `pressKey()`, extraction, `addCookie()`, `hasSession()`, `saveStorageState()`/`loadStorageState()`, recording + replay, network trace.
+- **BrowserSession:** Persistent Playwright sessions with `fill()` contenteditable/JS fallback, `pressKey()`, extraction, `addCookie()`, `hasSession()`, `saveStorageState()`/`loadStorageState()`, recording + replay + manual recording, network trace.
 - **AppModel type** (18 sections): workflow graph, recorded sessions, parameter classifications, auth boundaries, structured evidence, risk scoring, report compilation.
 - **Auto-report:** `compileReport()` generates HTML, JSON, or Markdown from app model findings — even if the LLM never calls `write_file`. Always written after agent completes.
 - **Dashboard:** Optional WebSocket + HTML server (`--dashboard` flag). Streams real-time tool calls, risk changes, status, and errors.
@@ -241,7 +245,7 @@ src/
 ├── cli/               — CLI commands (assess, scan, verify, interact, init)
 ├── core/              — AppModel types, BrowserSessionManager, fix-todos middleware
 ├── providers/         — 11 LLM provider factories
-├── tools/             — 45 tools + tool-registry
+├── tools/             — 47 tools + tool-registry
 ├── pipeline/          — AutonomousOrchestrator + THREAT_MODEL_PROMPT
 ├── explorer/          — Pre-map phase (network-recorder, dom-observer, crawler, workflow-builder)
 ├── dashboard/         — WebSocket + HTML live dashboard
@@ -257,7 +261,7 @@ src/
 
 ```bash
 npx vitest run
-# 306 tests, 19 files, 0 failures
+# 327 tests, 22 files, 0 failures
 npx tsc --noEmit       # 0 type errors
 npm run build           # 0 warnings
 ```

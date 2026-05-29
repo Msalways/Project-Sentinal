@@ -127,6 +127,35 @@ Live chat loop with the autonomous agent. Browser + all tools available:
 npx tsx src/cli/index.ts interact -t https://your-app.com
 ```
 
+### Manual Recording in REPL
+
+When the agent encounters complex workflows (MFA, CAPTCHA, custom JS forms), use the `/record` command:
+
+```bash
+# Start manual recording — opens visible Playwright browser
+/record start
+
+# Interact directly with the browser — clicks, fills, navigations are captured
+
+# Check recording status
+/record status
+
+# Stop recording — steps are saved; the agent is prompted to store them
+/record stop
+
+# Stop and name the flow
+/record stop login-flow
+```
+
+The captured steps are saved to the app model's `recordedSessions` section and can be replayed later with `browser_replay_macro`.
+
+### Other REPL commands
+
+```bash
+/quit    # Exit the REPL
+/record  # Toggle manual browser recording (see above)
+```
+
 ## 6. Demo Mode
 
 ```bash
@@ -199,7 +228,7 @@ Provider auto-detection order: `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `AN
 | `npx tsx src/cli/index.ts assess --with-src <dir>` | Pre-populate from source code scan |
 | `npx tsx src/cli/index.ts scan -t <url>` | Autonomous pentest (legacy) |
 | `npx tsx src/cli/index.ts verify -a <json> -t <url>` | Verify findings against new deployment |
-| `npx tsx src/cli/index.ts interact -t <url>` | Live REPL chat loop |
+| `npx tsx src/cli/index.ts interact -t <url>` | Live REPL chat loop. Type `/record start` for manual browser recording |
 | `npx tsx src/cli/index.ts demo` | Demo with mock findings |
 | `npx tsx src/cli/index.ts tools` | List security tools |
 | `npx tsx src/cli/index.ts providers` | List LLM providers |

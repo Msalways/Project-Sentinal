@@ -1,7 +1,6 @@
 provider:
   name: nvidia
-  model: qwen/qwen3-coder-480b-a35b-instruct
-  baseURL: https://integrate.api.nvidia.com/v1
+  model: openai/gpt-oss-120b
 scan:
   target: 
 output:
