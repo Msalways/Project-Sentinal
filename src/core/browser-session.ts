@@ -76,6 +76,16 @@ export class BrowserSessionManager {
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-popup-blocking',
+        '--disable-session-crashed-bubble',
+        '--disable-component-update',
+        '--no-service-autorun',
+        '--password-store=basic',
+        '--use-mock-keychain',
+        '--hide-scrollbars',
+        '--mute-audio',
+        '--disable-background-networking',
+        '--disable-breakpad',
+        '--disable-sync',
       ],
     });
     const context = await browser.newContext({
@@ -85,6 +95,9 @@ export class BrowserSessionManager {
       timezoneId: 'America/New_York',
       geolocation: { latitude: 40.7128, longitude: -74.006 },
       permissions: ['geolocation'],
+      deviceScaleFactor: 2,
+      hasTouch: false,
+      isMobile: false,
     });
     const page = await context.newPage();
     // Hide automation fingerprints from Cloudflare/detection scripts
@@ -180,9 +193,138 @@ export class BrowserSessionManager {
     if (recording) recording.push(step);
   }
 
+  private manualListeners = new Map<string, () => void>();
+
+  /** Start recording manual user interactions in the visible Playwright browser.
+   *  The human can click, type, and navigate directly in the browser window.
+   *  These actions are captured as MacroStep entries via injected DOM listeners. */
+  async startManualRecording(sessionId: string): Promise<string> {
+    if (this.manualListeners.has(sessionId)) {
+      return `Manual recording already active for session "${sessionId}".`;
+    }
+
+    const page = await this.getOrCreate(sessionId);
+
+    // Ensure a recording buffer exists
+    if (!this.recordings.has(sessionId)) this.startRecording(sessionId);
+
+    // Expose Node.js callbacks to the browser page
+    await page.exposeFunction('__ul_recordClick', (selector: string) => {
+      this.record(sessionId, { type: 'click', selector });
+    });
+
+    await page.exposeFunction('__ul_recordInput', (selector: string, value: string) => {
+      this.record(sessionId, { type: 'fill', selector, value });
+    });
+
+    await page.exposeFunction('__ul_recordNavigate', (url: string) => {
+      this.record(sessionId, { type: 'navigate', url });
+    });
+
+    // Inject DOM event listeners into the page
+    await page.evaluate(() => {
+      const prevCleanup = (window as any).__ul_cleanup;
+      if (typeof prevCleanup === 'function') prevCleanup();
+
+      const clickHandler = (e: MouseEvent) => {
+        const el = e.target as HTMLElement;
+        if (!el || !el.tagName) return;
+        const sel = generateSel(el);
+        (window as any).__ul_recordClick(sel);
+      };
+
+      const inputHandler = (e: Event) => {
+        const el = e.target as HTMLInputElement | HTMLTextAreaElement;
+        if (!el || !el.tagName) return;
+        // Only capture user-initiated input on named fields
+        if (!el.name && !el.id) return;
+        const val = (el as any).value;
+        if (val === undefined || val === null) return;
+        if ((window as any).__ul_inputTimer) clearTimeout((window as any).__ul_inputTimer);
+        (window as any).__ul_inputTimer = setTimeout(() => {
+          const sel = generateSel(el);
+          (window as any).__ul_recordInput(sel, String(val));
+        }, 400);
+      };
+
+      document.addEventListener('click', clickHandler, true);
+      document.addEventListener('input', inputHandler, true);
+
+      (window as any).__ul_cleanup = () => {
+        document.removeEventListener('click', clickHandler, true);
+        document.removeEventListener('input', inputHandler, true);
+      };
+
+      function generateSel(el: HTMLElement): string {
+        if (el.id) return `#${CSS.escape(el.id)}`;
+        const tag = el.tagName.toLowerCase();
+        const cls = Array.from(el.classList).slice(0, 2).map(c => CSS.escape(c)).join('.');
+        if (cls) return `${tag}.${cls}`;
+        const parent = el.parentElement;
+        if (parent) {
+          const idx = Array.from(parent.children).indexOf(el) + 1;
+          return `${tag}:nth-child(${idx})`;
+        }
+        return tag;
+      }
+    });
+
+    // Detect full-page navigations from URL changes
+    const navHandler = (frame: any) => {
+      if (frame === page.mainFrame()) {
+        const url = frame.url();
+        if (url && url !== 'about:blank') {
+          this.record(sessionId, { type: 'navigate', url });
+        }
+      }
+    };
+    page.on('framenavigated', navHandler);
+
+    this.manualListeners.set(sessionId, () => {
+      page.removeListener('framenavigated', navHandler);
+    });
+
+    return `Manual recording started for session "${sessionId}". Interact with the visible browser window directly — clicks, fills, and navigations are captured.`;
+  }
+
+  /** Stop manual recording and return captured steps. Does NOT clear the main recording buffer. */
+  async stopManualRecording(sessionId: string): Promise<MacroStep[]> {
+    const cleanup = this.manualListeners.get(sessionId);
+    if (cleanup) {
+      cleanup();
+      this.manualListeners.delete(sessionId);
+    }
+
+    try {
+      const page = this.sessions.get(sessionId)?.page;
+      if (page) {
+        await page.evaluate(() => {
+          if (typeof (window as any).__ul_cleanup === 'function') (window as any).__ul_cleanup();
+          delete (window as any).__ul_cleanup;
+          delete (window as any).__ul_recordClick;
+          delete (window as any).__ul_recordInput;
+          delete (window as any).__ul_recordNavigate;
+        }).catch(() => {});
+      }
+    } catch { /* best effort */ }
+
+    // Return steps captured during manual mode without clearing the main recording
+    return this.getRecording(sessionId);
+  }
+
   async navigate(sessionId: string, url: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
-    await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+    try {
+      await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+    } catch {
+      // SPA fallback — 'load' timeout (WebSockets, long-polling). Try domcontentloaded.
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch {
+        // Give up — page may be behind auth wall or blocked
+        await page.goto(url, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+      }
+    }
     this.record(sessionId, { type: 'navigate', url });
     return page.url();
   }

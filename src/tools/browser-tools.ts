@@ -410,3 +410,33 @@ export function createBrowserGetTraceTool(): DynamicStructuredTool {
     }),
   });
 }
+
+// ── Manual Recording Tools ──
+
+export function createManualRecordStartTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    const mgr = getBrowserManager();
+    const result = await mgr.startManualRecording(sessionId);
+    return result;
+  }, {
+    name: 'manual_record_start',
+    description: 'Start recording direct manual browser interactions. Opens the visible Playwright window so a human can click, type, and navigate. Every action is captured as a macro step. Use manual_record_stop to finish and get the recorded steps.',
+    schema: SessionIdSchema,
+  });
+}
+
+export function createManualRecordStopTool(): DynamicStructuredTool {
+  return tool(async (input) => {
+    const { sessionId } = input;
+    const mgr = getBrowserManager();
+    const steps = await mgr.stopManualRecording(sessionId);
+    if (steps.length === 0) return `No steps were recorded for session "${sessionId}".`;
+    const summary = steps.map((s, i) => `  ${i + 1}. ${s.type}${s.selector ? ` → ${s.selector}` : ''}${s.value ? ` = "${s.value.slice(0, 60)}"` : ''}${s.url ? ` → ${s.url}` : ''}`).join('\n');
+    return `Manual recording stopped for session "${sessionId}". Captured ${steps.length} steps:\n${summary}`;
+  }, {
+    name: 'manual_record_stop',
+    description: 'Stop manual recording and return the captured macro steps. Use update_app_model to save them to the app model for later replay.',
+    schema: SessionIdSchema,
+  });
+}

@@ -10,9 +10,11 @@ export function u(input: Record<string, unknown>): Record<string, unknown> {
   return input;
 }
 
-import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserGetFormsTool, createBrowserGetCookiesTool, createBrowserGetScriptsTool, createBrowserGetStorageTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool, createBrowserReplayMacroTool, createMacroListTool, createInjectCookieTool, createCreateBrowserSessionTool, createListBrowserSessionsTool, createSaveStorageStateTool, createLoadStorageStateTool } from './browser-tools';
+import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserGetFormsTool, createBrowserGetCookiesTool, createBrowserGetScriptsTool, createBrowserGetStorageTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool, createBrowserReplayMacroTool, createMacroListTool, createInjectCookieTool, createCreateBrowserSessionTool, createListBrowserSessionsTool, createSaveStorageStateTool, createLoadStorageStateTool, createManualRecordStartTool, createManualRecordStopTool } from './browser-tools';
 import { createReadAppModelTool, createUpdateAppModelTool } from './app-model-tools';
 import { readAppModel, writeAppModel, calculateOverallRisk, renderWorkflowGraph, updateAppModelSection, type AppModelSection } from '../core/app-model';
+import { OastServer } from '../oast/server';
+import { triageFinding, applyTriageToFindings } from '../triage';
 
 type AnyTool = DynamicStructuredTool;
 
@@ -656,6 +658,22 @@ toolRegistry.register({
 });
 
 toolRegistry.register({
+  name: 'manual_record_start',
+  category: 'browser',
+  description: 'Start recording DIRECT manual browser interactions. Opens the visible Playwright window so a human can click, type, and navigate. Every action is captured as a macro step. Use manual_record_stop to finish and save to the app model.',
+  tags: ['browser', 'recording', 'manual', 'human'],
+  factory: () => createManualRecordStartTool(),
+});
+
+toolRegistry.register({
+  name: 'manual_record_stop',
+  category: 'browser',
+  description: 'Stop manual recording and return the captured macro steps. Use update_app_model to save them to the app model for later replay. The steps can be replayed with browser_replay_macro.',
+  tags: ['browser', 'recording', 'manual', 'human'],
+  factory: () => createManualRecordStopTool(),
+});
+
+toolRegistry.register({
   name: 'browser_get_recording',
   category: 'browser',
   description: 'Get the current recorded actions for a browser session without stopping recording',
@@ -767,6 +785,98 @@ toolRegistry.register({
   description: 'Update a section of the app model JSON file. Use this to record new endpoints, forms, findings, workflow nodes/edges, hypotheses, or tech stack as you discover them.',
   tags: ['utility', 'app-model', 'memory'],
   factory: () => createUpdateAppModelTool(),
+});
+
+// ── OAST Tools ──
+
+toolRegistry.register({
+  name: 'oast_create_url',
+  category: 'utility',
+  description: 'Create a unique OAST callback URL. Use this URL in blind payloads (XSS, SSRF, SQLi) to detect out-of-band callbacks. Save the returned uuid, then use oast_check with that uuid to see if a callback was received.',
+  tags: ['utility', 'oast', 'exploit'],
+  factory: () => tool(async () => {
+    const { getOastServer } = await import('../oast');
+    const srv = getOastServer();
+    const { uuid, url } = srv.createUrl();
+    return JSON.stringify({ uuid, url, note: 'Use this URL in blind payloads. Check back later with oast_check.' }, null, 2);
+  }, {
+    name: 'oast_create_url',
+    description: 'Create a unique OAST callback URL for blind payload detection',
+    schema: z.object({}),
+  }),
+});
+
+toolRegistry.register({
+  name: 'oast_check',
+  category: 'utility',
+  description: 'Check for OAST callbacks. Pass a uuid to check a specific URL, or omit to check all. Returns any requests that hit the OAST server from blind payloads.',
+  tags: ['utility', 'oast', 'exploit'],
+  factory: () => tool(async (input) => {
+    const { uuid } = z.object({
+      uuid: z.string().optional().describe('Optional UUID to check for specific callback'),
+    }).parse(input);
+    const { getOastServer } = await import('../oast');
+    const srv = getOastServer();
+    const callbacks = srv.checkCallbacks(uuid);
+    if (callbacks.length === 0) return JSON.stringify({ callbacks: [], message: 'No callbacks received yet.' }, null, 2);
+    return JSON.stringify({
+      callbacks: callbacks.map(c => ({
+        uuid: c.uuid,
+        timestamp: new Date(c.timestamp).toISOString(),
+        method: c.method,
+        url: c.url,
+        remoteAddress: c.remoteAddress,
+        body: c.body ? c.body.slice(0, 200) : null,
+      })),
+      count: callbacks.length,
+    }, null, 2);
+  }, {
+    name: 'oast_check',
+    description: 'Check for OAST callbacks from blind payloads',
+    schema: z.object({
+      uuid: z.string().optional().describe('Specific UUID to check, or omit for all'),
+    }),
+  }),
+});
+
+// ── Coverage Tool ──
+
+toolRegistry.register({
+  name: 'record_coverage',
+  category: 'utility',
+  description: 'Record that an endpoint/param was tested or skipped. This tracks coverage so you can see what was probed and what was skipped (and why).',
+  tags: ['utility', 'coverage', 'recon'],
+  factory: () => tool(async (input) => {
+    const { app_model_path, endpoint, method, param, status, reason } = z.object({
+      app_model_path: z.string().describe('Path to the app model JSON file'),
+      endpoint: z.string().describe('The endpoint URL or path'),
+      method: z.string().describe('HTTP method (GET, POST, PUT, DELETE, etc.)'),
+      param: z.string().describe('The parameter name, or "none" if no parameter'),
+      status: z.enum(['tested', 'skipped']).describe('Whether the parameter was tested or skipped'),
+      reason: z.string().describe('Why it was tested or skipped (e.g., "auth required", "injected SQLi", "not applicable")'),
+    }).parse(input);
+    const { readAppModel, writeAppModel } = await import('../core/app-model');
+    const model = readAppModel(app_model_path);
+    const entry = { endpoint, method, param, status, reason, timestamp: Date.now() };
+    if (!model.coverage) model.coverage = [];
+    const key = `${method}:${endpoint}:${param}`;
+    const existing = model.coverage.findIndex(c => `${c.method}:${c.endpoint}:${c.param}` === key);
+    if (existing >= 0) model.coverage[existing] = entry;
+    else model.coverage.push(entry);
+    writeAppModel(app_model_path, model);
+    return JSON.stringify({ recorded: entry, totalCoverage: model.coverage.length }, null, 2);
+  }, {
+    name: 'record_coverage',
+    description: 'Record that an endpoint/param was tested or skipped',
+    schema: z.object({
+      app_model_path: z.string().describe('Path to the app model JSON file'),
+      endpoint: z.string().describe('Endpoint URL or path'),
+      method: z.string().describe('HTTP method'),
+      param: z.string().describe('Parameter name, or "none"'),
+      status: z.enum(['tested', 'skipped']).describe('Tested or skipped'),
+      reason: z.string().describe('Why it was tested or skipped'),
+    }),
+  }),
 });
 
 // ── Helpers ──

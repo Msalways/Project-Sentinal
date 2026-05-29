@@ -6,6 +6,7 @@ const VALID_SECTIONS: AppModelSection[] = [
   'target', 'techStack', 'auth', 'workflow', 'endpoints', 'forms', 'scripts',
   'cookies', 'localStorage', 'findings', 'verifications', 'parameterClassifications',
   'authBoundaries', 'recordedSessions', 'hypotheses', 'nextSteps', 'visitedUrls',
+  'oastCallbacks', 'coverage',
 ];
 
 export function createReadAppModelTool(): DynamicStructuredTool {
@@ -21,7 +22,7 @@ export function createReadAppModelTool(): DynamicStructuredTool {
     return raw;
   }, {
     name: 'read_app_model',
-    description: 'Read the app model JSON file. Optionally pass a section name to read only that part (target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls)',
+    description: 'Read the app model JSON file. Optionally pass a section name to read only that part (target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage)',
     schema: ReadAppModelSchema,
   });
 }
@@ -43,12 +44,12 @@ export function createUpdateAppModelTool(): DynamicStructuredTool {
 
 const ReadAppModelSchema = z.object({
   path: z.string().describe('File path to the app model JSON file'),
-  section: z.string().optional().describe('Optional section name to read: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls'),
+  section: z.string().optional().describe('Optional section name: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage'),
 });
 
 const UpdateAppModelSchema = z.object({
   path: z.string().describe('File path to the app model JSON file'),
-  section: z.string().describe('Section name to update: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls'),
+  section: z.string().describe('Section name: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage'),
   data: z.any().describe('The data to write to this section. For arrays, new items are merged (deduplicated by path/name/src). For objects, keys are merged at the top level.'),
   merge: z.boolean().optional().default(true).describe('Whether to merge with existing data (true) or overwrite entirely (false). Default: true'),
 });
