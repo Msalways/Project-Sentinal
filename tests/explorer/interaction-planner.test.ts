@@ -8,6 +8,8 @@ function makeSnapshot(overrides: Partial<DOMSnapshot> = {}): DOMSnapshot {
     title: 'Test Page',
     forms: [],
     interactive: [],
+    dialogs: [],
+    overlays: [],
     textContent: '',
     hash: 'abc123',
     ...overrides,
