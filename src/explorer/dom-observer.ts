@@ -17,6 +17,18 @@ export interface DOMSnapshot {
     href: string | null;
     type: string | null;
   }>;
+  dialogs: Array<{
+    tag: string;
+    role: string;
+    text: string;
+    selector: string;
+    isVisible: boolean;
+  }>;
+  overlays: Array<{
+    selector: string;
+    text: string;
+    tag: string;
+  }>;
   textContent: string;
   hash: string;
 }
@@ -48,6 +60,8 @@ export async function takeSnapshot(page: Page): Promise<DOMSnapshot> {
   const base: Omit<DOMSnapshot, 'hash'> = await page.evaluate(() => {
     const forms: DOMSnapshot['forms'] = [];
     const interactive: DOMSnapshot['interactive'] = [];
+    const dialogs: DOMSnapshot['dialogs'] = [];
+    const overlays: DOMSnapshot['overlays'] = [];
 
     document.querySelectorAll('form').forEach((form, fi) => {
       const fields: DOMSnapshot['forms'][0]['fields'] = [];
@@ -75,11 +89,37 @@ export async function takeSnapshot(page: Page): Promise<DOMSnapshot> {
       interactive.push({ tag, text, selector: buildSelector(el), href, type });
     });
 
+    // Dialogs / modals / popups
+    document.querySelectorAll<HTMLElement>('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]').forEach(el => {
+      const isVisible = el.checkVisibility();
+      dialogs.push({
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute('role') || '',
+        text: (el.textContent || '').trim().slice(0, 200),
+        selector: buildSelector(el),
+        isVisible,
+      });
+    });
+
+    // Overlays / banners / cookie consent / fixed-position panels
+    document.querySelectorAll<HTMLElement>('div[class*="overlay"], div[class*="modal"], div[class*="popup"], div[class*="banner"], div[class*="cookie"], div[class*="consent"], [data-testid*="cookie"], [data-testid*="consent"], [data-testid*="modal"]').forEach(el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 100 && rect.height > 50) {
+        overlays.push({
+          selector: buildSelector(el),
+          text: (el.textContent || '').trim().slice(0, 150),
+          tag: el.tagName.toLowerCase(),
+        });
+      }
+    });
+
     return {
       url: window.location.href,
       title: document.title,
       forms,
       interactive,
+      dialogs,
+      overlays,
       textContent: (document.body?.innerText || '').slice(0, 10000),
     };
   });

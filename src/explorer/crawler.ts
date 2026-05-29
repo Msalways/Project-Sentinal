@@ -59,8 +59,12 @@ export async function crawl(options: CrawlOptions): Promise<CrawlResult> {
     try {
       await page.goto(item.url, { waitUntil: 'load', timeout: 15000 });
     } catch {
-      log(`  Navigation failed: ${item.url}`);
-      continue;
+      try {
+        await page.goto(item.url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      } catch {
+        log(`  Navigation failed: ${item.url}`);
+        continue;
+      }
     }
 
     // Small wait for JS rendering

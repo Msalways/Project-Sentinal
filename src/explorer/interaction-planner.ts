@@ -44,6 +44,42 @@ function contextAwareField(field: { name: string; type: string; placeholder: str
 export function planInteractions(snapshot: DOMSnapshot, visitedUrls: Set<string>, seenSelectors: Set<string>): Interaction[] {
   const interactions: Interaction[] = [];
 
+  // 0. Dialogs / overlays — dismiss or interact first (cookie banners, login modals, popups)
+  for (const d of snapshot.dialogs) {
+    if (seenSelectors.has(d.selector)) continue;
+    if (!d.isVisible) continue;
+    seenSelectors.add(d.selector);
+    const textLower = d.text.toLowerCase();
+    // Look for accept/dismiss buttons inside the dialog
+    let btnSel = `${d.selector} button, ${d.selector} a, ${d.selector} [role="button"]`;
+    if (/accept|agree|allow|consent|got it|ok/i.test(textLower)) {
+      interactions.push({
+        type: 'click',
+        targetSelector: `${d.selector} [class*="accept"], ${d.selector} [class*="agree"], ${d.selector} [class*="allow"], ${d.selector} button:first-of-type`,
+        label: `accept dialog: ${d.text.slice(0, 60)}`,
+      });
+    } else if (/reject|decline|deny|refuse|only essential/i.test(textLower)) {
+      interactions.push({
+        type: 'click',
+        targetSelector: `${d.selector} [class*="reject"], ${d.selector} [class*="decline"], ${d.selector} [data-testid*="reject"]`,
+        label: `reject dialog: ${d.text.slice(0, 60)}`,
+      });
+    }
+  }
+
+  for (const o of snapshot.overlays) {
+    if (seenSelectors.has(o.selector)) continue;
+    seenSelectors.add(o.selector);
+    const textLower = o.text.toLowerCase();
+    if (/accept|agree|allow|consent|got it|ok/i.test(textLower)) {
+      interactions.push({
+        type: 'click',
+        targetSelector: `${o.selector} button, ${o.selector} a`,
+        label: `accept overlay: ${o.text.slice(0, 60)}`,
+      });
+    }
+  }
+
   // 1. Form submissions — fill and submit
   for (const form of snapshot.forms) {
     if (seenSelectors.has(form.selector + ':submit')) continue;
