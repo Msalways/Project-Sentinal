@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
+import { getAppModelPath } from '../core/app-model-path';
 
 export function u(input: Record<string, unknown>): Record<string, unknown> {
   if (input.url) return input;
@@ -12,6 +13,8 @@ export function u(input: Record<string, unknown>): Record<string, unknown> {
 
 import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserGetFormsTool, createBrowserGetCookiesTool, createBrowserGetScriptsTool, createBrowserGetStorageTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool, createBrowserReplayMacroTool, createMacroListTool, createInjectCookieTool, createCreateBrowserSessionTool, createListBrowserSessionsTool, createSaveStorageStateTool, createLoadStorageStateTool, createManualRecordStartTool, createManualRecordStopTool } from './browser-tools';
 import { createReadAppModelTool, createUpdateAppModelTool } from './app-model-tools';
+import { createCrawlDiscoverTool } from './crawl-tools';
+import { createGetSessionStatusTool, createGetDomSnapshotTool, createExportHarTool, createWaitForNavigationTool, createResetSessionTool } from './session-tools';
 import { readAppModel, writeAppModel, calculateOverallRisk, renderWorkflowGraph, updateAppModelSection, type AppModelSection } from '../core/app-model';
 import { OastServer } from '../oast/server';
 import { triageFinding, applyTriageToFindings } from '../triage';
@@ -82,12 +85,10 @@ toolRegistry.register({
   category: 'utility',
   description: 'Calculate the overall risk score from the app model findings. Returns a score (0-100), level (info/low/medium/high/critical), and breakdown by severity.',
   tags: ['utility', 'risk'],
-  factory: () => tool(async (input) => {
-    const { app_model_path } = z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
-    }).parse(input);
+  factory: () => tool(async (_input) => {
+    const path = getAppModelPath();
     try {
-      const model = readAppModel(app_model_path);
+      const model = readAppModel(path);
       const risk = calculateOverallRisk(model);
       return JSON.stringify(risk, null, 2);
     } catch (err) {
@@ -96,9 +97,7 @@ toolRegistry.register({
   }, {
     name: 'calculate_risk',
     description: 'Calculate overall risk score from app model findings',
-    schema: z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
-    }),
+    schema: z.object({}),
   }),
 });
 
@@ -107,12 +106,10 @@ toolRegistry.register({
   category: 'utility',
   description: 'Render the workflow graph from the app model as a Mermaid diagram. Shows how pages connect and which require auth.',
   tags: ['utility', 'workflow'],
-  factory: () => tool(async (input) => {
-    const { app_model_path } = z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
-    }).parse(input);
+  factory: () => tool(async (_input) => {
+    const path = getAppModelPath();
     try {
-      const model = readAppModel(app_model_path);
+      const model = readAppModel(path);
       return renderWorkflowGraph(model);
     } catch (err) {
       return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -120,9 +117,7 @@ toolRegistry.register({
   }, {
     name: 'render_workflow_graph',
     description: 'Render workflow graph as Mermaid diagram',
-    schema: z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
-    }),
+    schema: z.object({}),
   }),
 });
 
@@ -132,15 +127,15 @@ toolRegistry.register({
   description: 'Classify a parameter by its purpose and save to the app model. Valid classifications: id, email, password, search, price, quantity, name, date, file, token, unknown.',
   tags: ['utility', 'recon'],
   factory: () => tool(async (input) => {
-    const { app_model_path, param_name, page_url, classification, attack_hints } = z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
+    const { param_name, page_url, classification, attack_hints } = z.object({
       param_name: z.string().describe('Name of the parameter'),
       page_url: z.string().describe('URL of the page where the parameter appears'),
       classification: z.enum(['id', 'email', 'password', 'search', 'price', 'quantity', 'name', 'date', 'file', 'token', 'unknown']).describe('Classified purpose of the parameter'),
       attack_hints: z.array(z.string()).optional().describe('Suggested attack strategies'),
     }).parse(input);
+    const path = getAppModelPath();
     try {
-      updateAppModelSection(app_model_path, 'parameterClassifications', [{
+      updateAppModelSection(path, 'parameterClassifications', [{
         paramName: param_name,
         pageUrl: page_url,
         classifiedAs: classification,
@@ -154,7 +149,6 @@ toolRegistry.register({
     name: 'classify_parameter',
     description: 'Classify a parameter by purpose and save to app model',
     schema: z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
       param_name: z.string().describe('Name of the parameter'),
       page_url: z.string().describe('URL of the page where the parameter appears'),
       classification: z.enum(['id', 'email', 'password', 'search', 'price', 'quantity', 'name', 'date', 'file', 'token', 'unknown']).describe('Classified purpose of the parameter'),
@@ -787,6 +781,16 @@ toolRegistry.register({
   factory: () => createUpdateAppModelTool(),
 });
 
+// ── Crawl Tool ──
+
+toolRegistry.register({
+  name: 'crawl_discover',
+  category: 'recon',
+  description: 'Run the automated spider to discover routes, forms, links, cookies, and tech stack. Optionally saves results to the app model. Use to rapidly map a new target.',
+  tags: ['recon', 'explore', 'browser'],
+  factory: () => createCrawlDiscoverTool(),
+});
+
 // ── OAST Tools ──
 
 toolRegistry.register({
@@ -847,29 +851,28 @@ toolRegistry.register({
   description: 'Record that an endpoint/param was tested or skipped. This tracks coverage so you can see what was probed and what was skipped (and why).',
   tags: ['utility', 'coverage', 'recon'],
   factory: () => tool(async (input) => {
-    const { app_model_path, endpoint, method, param, status, reason } = z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
+    const { endpoint, method, param, status, reason } = z.object({
       endpoint: z.string().describe('The endpoint URL or path'),
       method: z.string().describe('HTTP method (GET, POST, PUT, DELETE, etc.)'),
       param: z.string().describe('The parameter name, or "none" if no parameter'),
       status: z.enum(['tested', 'skipped']).describe('Whether the parameter was tested or skipped'),
       reason: z.string().describe('Why it was tested or skipped (e.g., "auth required", "injected SQLi", "not applicable")'),
     }).parse(input);
+    const path = getAppModelPath();
     const { readAppModel, writeAppModel } = await import('../core/app-model');
-    const model = readAppModel(app_model_path);
+    const model = readAppModel(path);
     const entry = { endpoint, method, param, status, reason, timestamp: Date.now() };
     if (!model.coverage) model.coverage = [];
     const key = `${method}:${endpoint}:${param}`;
     const existing = model.coverage.findIndex(c => `${c.method}:${c.endpoint}:${c.param}` === key);
     if (existing >= 0) model.coverage[existing] = entry;
     else model.coverage.push(entry);
-    writeAppModel(app_model_path, model);
+    writeAppModel(path, model);
     return JSON.stringify({ recorded: entry, totalCoverage: model.coverage.length }, null, 2);
   }, {
     name: 'record_coverage',
     description: 'Record that an endpoint/param was tested or skipped',
     schema: z.object({
-      app_model_path: z.string().describe('Path to the app model JSON file'),
       endpoint: z.string().describe('Endpoint URL or path'),
       method: z.string().describe('HTTP method'),
       param: z.string().describe('Parameter name, or "none"'),
@@ -877,6 +880,48 @@ toolRegistry.register({
       reason: z.string().describe('Why it was tested or skipped'),
     }),
   }),
+});
+
+// ── Session Tools ──
+
+toolRegistry.register({
+  name: 'get_session_status',
+  category: 'utility',
+  description: 'Check the current status of a browser session — URL, recording step count, tracing state.',
+  tags: ['utility', 'session'],
+  factory: () => createGetSessionStatusTool(),
+});
+
+toolRegistry.register({
+  name: 'get_dom_snapshot',
+  category: 'browser',
+  description: 'Take a DOM snapshot of the current page — returns forms, interactive elements, dialogs, overlays.',
+  tags: ['browser', 'recon'],
+  factory: () => createGetDomSnapshotTool(),
+});
+
+toolRegistry.register({
+  name: 'export_har',
+  category: 'utility',
+  description: 'Export the current network trace as a HAR file, then restart tracing.',
+  tags: ['utility', 'network'],
+  factory: () => createExportHarTool(),
+});
+
+toolRegistry.register({
+  name: 'wait_for_navigation',
+  category: 'browser',
+  description: 'Wait for the current page to finish loading after a click or form submit.',
+  tags: ['browser', 'navigation'],
+  factory: () => createWaitForNavigationTool(),
+});
+
+toolRegistry.register({
+  name: 'reset_session',
+  category: 'browser',
+  description: 'Clear cookies, localStorage, and sessionStorage without closing the browser.',
+  tags: ['browser', 'session', 'auth'],
+  factory: () => createResetSessionTool(),
 });
 
 // ── Helpers ──

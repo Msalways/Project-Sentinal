@@ -1,5 +1,7 @@
 # Usage Guide
 
+> **⚠️ OUTDATED** — This document covers an earlier version ("sentinel"). See [USAGE.md](../USAGE.md) at the project root for current CLI commands.
+
 This guide covers practical usage of Ultimatrix for security testing.
 
 ## Table of Contents

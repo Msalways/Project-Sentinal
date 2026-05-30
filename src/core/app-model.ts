@@ -98,6 +98,25 @@ export interface AuthBoundary {
   evidence: string;
 }
 
+// ── Navigation Entry ──
+
+export interface NavigationEntry {
+  fromUrl: string;
+  toUrl: string;
+  trigger: 'click' | 'form_submit' | 'navigation' | 'redirect' | 'script' | 'manual';
+  timestamp: number;
+}
+
+// ── Browser Session Metadata ──
+
+export interface BrowserSessionMeta {
+  createdAt: number;
+  currentUrl: string;
+  recording: boolean;
+  tracing: boolean;
+  stepCount: number;
+}
+
 // ── Top-level Model ──
 
 export interface AppModel {
@@ -143,11 +162,34 @@ export interface AppModel {
     reason: string;
     timestamp: number;
   }>;
+  currentPage: {
+    url: string;
+    title: string;
+    lastUpdatedAt: number;
+    snapshotHash: string;
+  };
+  warnings: Array<{ timestamp: number; message: string; source: string }>;
+  eventLog: Array<{ timestamp: number; type: 'pagechange' | 'toolcall' | 'finding' | 'error' | 'navigation'; detail: string }>;
+  artifacts: {
+    harFiles: string[];
+    screenshots: string[];
+    traceFiles: string[];
+  };
+  browserSessions: Record<string, BrowserSessionMeta>;
+  navigationHistory: NavigationEntry[];
+  errors: Array<{ timestamp: number; type: string; message: string; url?: string }>;
+  _meta: {
+    startedAt: number;
+    duration: number;
+    totalToolCalls: number;
+    lastUpdatedAt: number;
+    agentVersion: string;
+  };
 }
 
 export type AppModelSection = keyof AppModel;
 
-const DEFAULT_MODEL: AppModel = {
+export const DEFAULT_MODEL: AppModel = {
   target: '',
   techStack: [],
   auth: { type: 'unknown', loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
@@ -167,6 +209,14 @@ const DEFAULT_MODEL: AppModel = {
   visitedUrls: [],
   oastCallbacks: [],
   coverage: [],
+  currentPage: { url: '', title: '', lastUpdatedAt: 0, snapshotHash: '' },
+  warnings: [],
+  eventLog: [],
+  artifacts: { harFiles: [], screenshots: [], traceFiles: [] },
+  browserSessions: {},
+  navigationHistory: [],
+  errors: [],
+  _meta: { startedAt: 0, duration: 0, totalToolCalls: 0, lastUpdatedAt: 0, agentVersion: '' },
 };
 
 export function readAppModel(modelPath: string): AppModel {
@@ -181,7 +231,9 @@ export function readAppModel(modelPath: string): AppModel {
 
 export function writeAppModel(modelPath: string, model: AppModel): void {
   fs.mkdirSync(path.dirname(modelPath), { recursive: true });
-  fs.writeFileSync(modelPath, JSON.stringify(model, null, 2));
+  const tmpPath = modelPath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(model, null, 2));
+  fs.renameSync(tmpPath, modelPath);
 }
 
 export function readAppModelSection(modelPath: string, section: AppModelSection): unknown {
@@ -448,6 +500,11 @@ export function formatAppModelContext(model: AppModel): FormattedCrawlContext {
   // Detect private app
   let isPrivateApp = false;
   let privateAppReason = '';
+  const cookies = model.cookies || {};
+  const cookieKeys = Object.keys(cookies);
+  const hasAuthCookie = cookieKeys.some(
+    (k) => /session|token|auth|sid|jwt|connect\.sid|phpsessid|jsessionid|ss?ion/i.test(k)
+  );
 
   if (visited.length <= 1 && endpoints.length === 0) {
     isPrivateApp = true;
@@ -458,6 +515,11 @@ export function formatAppModelContext(model: AppModel): FormattedCrawlContext {
   } else if (auth.type !== 'none' && visited.length <= 2) {
     isPrivateApp = true;
     privateAppReason = `Auth type "${auth.type}" detected but only ${visited.length} pages crawled — login wall blocking exploration`;
+  }
+
+  if (hasAuthCookie && visited.length > 1) {
+    isPrivateApp = false;
+    privateAppReason = '';
   }
 
   if (isPrivateApp) {
@@ -562,6 +624,31 @@ export function formatAppModelContext(model: AppModel): FormattedCrawlContext {
   const skipped = coverage.filter(c => c.status === 'skipped').length;
   if (coverage.length > 0) {
     lines.push(`\nCoverage: ${tested} tested, ${skipped} skipped`);
+  }
+
+  // ── Cookies ──
+  if (cookieKeys.length > 0) {
+    lines.push(`\nCookies (${cookieKeys.length}):`);
+    const sessionKeys = cookieKeys.filter((k) => /session|token|auth|sid|jwt|connect\.sid/i.test(k));
+    if (sessionKeys.length > 0) {
+      lines.push(`  Auth-relevant: ${sessionKeys.join(', ')}`);
+    }
+    const otherKeys = cookieKeys.filter((k) => !/session|token|auth|sid|jwt|connect\.sid/i.test(k));
+    if (otherKeys.length > 0) {
+      lines.push(`  Other: ${otherKeys.join(', ')}`);
+    }
+  }
+
+  // ── LocalStorage ──
+  const ls = model.localStorage || {};
+  const lsKeys = Object.keys(ls);
+  if (lsKeys.length > 0) {
+    const tokenKeys = lsKeys.filter((k) => /token|jwt|auth|access.?token|refresh.?token/i.test(k));
+    if (tokenKeys.length > 0) {
+      lines.push(`\nLocalStorage: ${lsKeys.length} keys (${tokenKeys.length} auth-relevant)`);
+    } else {
+      lines.push(`\nLocalStorage: ${lsKeys.length} keys`);
+    }
   }
 
   // ── Visited URLs ──

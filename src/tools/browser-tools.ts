@@ -3,6 +3,7 @@ import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import { BrowserSessionManager } from '../core/browser-session';
 import { u } from './tool-registry';
 import { readAppModelSection, updateAppModelSection } from '../core/app-model';
+import { getAppModelPath } from '../core/app-model-path';
 
 let _browserManager: BrowserSessionManager | null = null;
 export function getSharedBrowserManager(headless?: boolean): BrowserSessionManager {
@@ -189,12 +190,12 @@ export function createBrowserCloseTool(): DynamicStructuredTool {
 
 export function createBrowserReplayMacroTool(): DynamicStructuredTool {
   return tool(async (input) => {
-    const { sessionId, name, appModelPath } = z.object({
+    const { sessionId, name } = z.object({
       sessionId: z.string().default('default'),
       name: z.string().describe('Name of the recorded macro to replay from app model recordedSessions'),
-      appModelPath: z.string().describe('Path to the app model JSON file containing recordedSessions'),
     }).parse(input);
-    const sessions = readAppModelSection(appModelPath, 'recordedSessions') as Record<string, any>;
+    const path = getAppModelPath();
+    const sessions = readAppModelSection(path, 'recordedSessions') as Record<string, any>;
     const steps = sessions?.[name];
     if (!steps || !Array.isArray(steps)) return `No recorded session named "${name}" found in app model. Use macro_list to see available macros.`;
     const result = await getBrowserManager().replayMacro(sessionId, steps as any);
@@ -205,27 +206,22 @@ export function createBrowserReplayMacroTool(): DynamicStructuredTool {
     schema: z.object({
       sessionId: z.string().default('default'),
       name: z.string().describe('Name of the recorded macro to replay'),
-      appModelPath: z.string().describe('Path to app model JSON file'),
     }),
   });
 }
 
 export function createMacroListTool(): DynamicStructuredTool {
-  return tool(async (input) => {
-    const { appModelPath } = z.object({
-      appModelPath: z.string().describe('Path to the app model JSON file'),
-    }).parse(input);
-    const sessions = readAppModelSection(appModelPath, 'recordedSessions') as Record<string, any>;
+  return tool(async (_input) => {
+    const path = getAppModelPath();
+    const sessions = readAppModelSection(path, 'recordedSessions') as Record<string, any>;
     const names = Object.keys(sessions || {});
     if (names.length === 0) return 'No recorded macros found in app model.';
     const details = names.map((n) => `- ${n}: ${sessions[n].length} steps`).join('\n');
     return `Recorded macros:\n${details}`;
   }, {
     name: 'macro_list',
-    description: 'List all named recorded macros saved in the app model\'s recordedSessions section.',
-    schema: z.object({
-      appModelPath: z.string().describe('Path to app model JSON file'),
-    }),
+    description: 'List all recorded macros from the app model\'s recordedSessions section',
+    schema: z.object({}),
   });
 }
 

@@ -1,5 +1,4 @@
 export * from './types';
-export * from './result';
 export { createConfig, loadFileConfig, getAgentConfig, defaultConfig } from './config';
 export type { UltimatrixFileConfig } from './config';
 export { buildTargetContext, getContextSummary } from './context';

@@ -1,6 +1,101 @@
 import type { Page } from 'playwright';
 import * as crypto from 'crypto';
 
+const TAKE_SNAPSHOT_SRC = `(function() {
+function buildSelector(el) {
+  if (el.id) return '#' + CSS.escape(el.id);
+  var dt = el.getAttribute('data-testid');
+  if (dt) return '[data-testid="' + CSS.escape(dt) + '"]';
+  var tag = el.tagName.toLowerCase();
+  var parent = el.parentElement;
+  if (parent) {
+    var siblings = Array.from(parent.children).filter(function(c) { return c.tagName === el.tagName; });
+    if (siblings.length > 1) {
+      var idx = siblings.indexOf(el) + 1;
+      return tag + ':nth-of-type(' + idx + ')';
+    }
+  }
+  if (el.className && typeof el.className === 'string') {
+    var cls = el.className.trim().split(/\\s+/).slice(0, 3).map(function(c) { return CSS.escape(c); }).join('.');
+    return tag + '.' + cls;
+  }
+  return tag;
+}
+var forms = [];
+var interactive = [];
+var dialogs = [];
+var overlays = [];
+document.querySelectorAll('form').forEach(function(form, fi) {
+  var fields = [];
+  form.querySelectorAll('input, select, textarea').forEach(function(el) {
+    fields.push({ name: el.name || el.id || 'field_' + fi + '_' + fields.length, type: (el.type || el.tagName.toLowerCase()), placeholder: (el.placeholder || ''), required: el.required || el.hasAttribute('required') });
+  });
+  forms.push({ selector: 'form:nth-of-type(' + (fi + 1) + ')', action: (form.action || ''), method: (form.method || 'get'), fields: fields });
+});
+document.querySelectorAll('a[href], button, input[type="submit"], input[type="button"], [role="button"]').forEach(function(el) {
+  var tag = el.tagName.toLowerCase();
+  var text = (el.textContent || el.getAttribute('aria-label') || el.getAttribute('value') || '').trim().slice(0, 100);
+  interactive.push({ tag: tag, text: text, selector: buildSelector(el), href: el.tagName === 'A' ? el.getAttribute('href') : null, type: el.getAttribute('type') });
+});
+document.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]').forEach(function(el) {
+  dialogs.push({ tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', text: (el.textContent || '').trim().slice(0, 200), selector: buildSelector(el), isVisible: el.checkVisibility() });
+});
+document.querySelectorAll('div[class*="overlay"], div[class*="modal"], div[class*="popup"], div[class*="banner"], div[class*="cookie"], div[class*="consent"], [data-testid*="cookie"], [data-testid*="consent"], [data-testid*="modal"], [role="presentation"], [class*="backdrop"], [class*="mask"], [class*="dialog-wrapper"]').forEach(function(el) {
+  var rect = el.getBoundingClientRect();
+  if (rect.width > 100 && rect.height > 50) overlays.push({ selector: buildSelector(el), text: (el.textContent || '').trim().slice(0, 150), tag: el.tagName.toLowerCase() });
+});
+/* Position-based scan: fixed/absolute elements covering > 50% viewport */
+(function() {
+  var vw = window.innerWidth;
+  var vh = window.innerHeight;
+  var all = document.querySelectorAll('body > div, body > section, body > aside');
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    var cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+    var z = parseInt(cs.zIndex, 10);
+    if (isNaN(z) || z < 100) continue;
+    var rect = el.getBoundingClientRect();
+    if (rect.width < vw * 0.3 || rect.height < vh * 0.3) continue;
+    if (rect.left > vw || rect.top > vh || rect.right < 0 || rect.bottom < 0) continue;
+    var existing = overlays.some(function(o) { return o.selector === buildSelector(el); });
+    if (!existing) overlays.push({ selector: buildSelector(el), text: (el.textContent || '').trim().slice(0, 150), tag: el.tagName.toLowerCase() });
+  }
+})();
+return { url: window.location.href, title: document.title, forms: forms, interactive: interactive, dialogs: dialogs, overlays: overlays, textContent: (document.body && document.body.innerText || '').slice(0, 10000) };
+})();`;
+
+const FRAME_SNAPSHOT_SRC = `(function() {
+function buildSelectorLocal(el) {
+  if (el.id) return '#' + CSS.escape(el.id);
+  var tag = el.tagName.toLowerCase();
+  var parent = el.parentElement;
+  if (parent) {
+    var siblings = Array.from(parent.children).filter(function(c) { return c.tagName === el.tagName; });
+    if (siblings.length > 1) {
+      var idx = siblings.indexOf(el) + 1;
+      return tag + ':nth-of-type(' + idx + ')';
+    }
+  }
+  return tag;
+}
+var forms = [];
+var interactive = [];
+document.querySelectorAll('form').forEach(function(form, fi) {
+  var fields = [];
+  form.querySelectorAll('input, select, textarea').forEach(function(el) {
+    fields.push({ name: el.name || el.id || 'field_' + fi + '_' + fields.length, type: (el.type || el.tagName.toLowerCase()), placeholder: (el.placeholder || ''), required: el.required || el.hasAttribute('required') });
+  });
+  forms.push({ selector: 'iframe form:nth-of-type(' + (fi + 1) + ')', action: (form.action || ''), method: (form.method || 'get'), fields: fields });
+});
+document.querySelectorAll('a[href], button').forEach(function(el) {
+  var tag = el.tagName.toLowerCase();
+  var text = (el.textContent || '').trim().slice(0, 100);
+  interactive.push({ tag: tag, text: text, selector: 'iframe ' + buildSelectorLocal(el), href: el.tagName === 'A' ? el.getAttribute('href') : null, type: null });
+});
+return { forms: forms, interactive: interactive };
+})();`;
+
 export interface DOMSnapshot {
   url: string;
   title: string;
@@ -33,96 +128,12 @@ export interface DOMSnapshot {
   hash: string;
 }
 
-function buildSelector(el: Element): string {
-  if (el.id) return `#${CSS.escape(el.id)}`;
-  if (el.getAttribute('data-testid')) return `[data-testid="${CSS.escape(el.getAttribute('data-testid')!)}"]`;
-  const tag = el.tagName.toLowerCase();
-  const parent = el.parentElement;
-  if (parent) {
-    const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
-    if (siblings.length > 1) {
-      const idx = siblings.indexOf(el) + 1;
-      return `${tag}:nth-of-type(${idx})`;
-    }
-  }
-  if (el.className && typeof el.className === 'string') {
-    const cls = el.className.trim().split(/\s+/).slice(0, 3).map(c => CSS.escape(c)).join('.');
-    return `${tag}.${cls}`;
-  }
-  return tag;
-}
-
 function hashSnapshot(data: Omit<DOMSnapshot, 'hash'>): string {
   return crypto.createHash('md5').update(JSON.stringify(data)).digest('hex').slice(0, 12);
 }
 
 export async function takeSnapshot(page: Page): Promise<DOMSnapshot> {
-  const base: Omit<DOMSnapshot, 'hash'> = await page.evaluate(() => {
-    const forms: DOMSnapshot['forms'] = [];
-    const interactive: DOMSnapshot['interactive'] = [];
-    const dialogs: DOMSnapshot['dialogs'] = [];
-    const overlays: DOMSnapshot['overlays'] = [];
-
-    document.querySelectorAll('form').forEach((form, fi) => {
-      const fields: DOMSnapshot['forms'][0]['fields'] = [];
-      form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input, select, textarea').forEach(el => {
-        fields.push({
-          name: el.name || el.id || `field_${fi}_${fields.length}`,
-          type: (el as HTMLInputElement).type || el.tagName.toLowerCase(),
-          placeholder: (el as HTMLInputElement).placeholder || '',
-          required: el.required || el.hasAttribute('required'),
-        });
-      });
-      forms.push({
-        selector: `form:nth-of-type(${fi + 1})`,
-        action: (form as HTMLFormElement).action || '',
-        method: (form as HTMLFormElement).method || 'get',
-        fields,
-      });
-    });
-
-    document.querySelectorAll<HTMLElement>('a[href], button, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
-      const tag = el.tagName.toLowerCase();
-      const text = (el.textContent || el.getAttribute('aria-label') || el.getAttribute('value') || '').trim().slice(0, 100);
-      const href = el.tagName === 'A' ? (el as HTMLAnchorElement).getAttribute('href') : null;
-      const type = el.getAttribute('type');
-      interactive.push({ tag, text, selector: buildSelector(el), href, type });
-    });
-
-    // Dialogs / modals / popups
-    document.querySelectorAll<HTMLElement>('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]').forEach(el => {
-      const isVisible = el.checkVisibility();
-      dialogs.push({
-        tag: el.tagName.toLowerCase(),
-        role: el.getAttribute('role') || '',
-        text: (el.textContent || '').trim().slice(0, 200),
-        selector: buildSelector(el),
-        isVisible,
-      });
-    });
-
-    // Overlays / banners / cookie consent / fixed-position panels
-    document.querySelectorAll<HTMLElement>('div[class*="overlay"], div[class*="modal"], div[class*="popup"], div[class*="banner"], div[class*="cookie"], div[class*="consent"], [data-testid*="cookie"], [data-testid*="consent"], [data-testid*="modal"]').forEach(el => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 100 && rect.height > 50) {
-        overlays.push({
-          selector: buildSelector(el),
-          text: (el.textContent || '').trim().slice(0, 150),
-          tag: el.tagName.toLowerCase(),
-        });
-      }
-    });
-
-    return {
-      url: window.location.href,
-      title: document.title,
-      forms,
-      interactive,
-      dialogs,
-      overlays,
-      textContent: (document.body?.innerText || '').slice(0, 10000),
-    };
-  });
+  const base: Omit<DOMSnapshot, 'hash'> = await page.evaluate(TAKE_SNAPSHOT_SRC);
 
   return {
     ...base,
@@ -133,3 +144,103 @@ export async function takeSnapshot(page: Page): Promise<DOMSnapshot> {
 export function isSamePage(a: DOMSnapshot, b: DOMSnapshot): boolean {
   return a.hash === b.hash;
 }
+
+// ── DOM Diff Engine ──
+
+export interface SnapshotDiff {
+  urlChanged: { from: string; to: string } | null;
+  newForms: DOMSnapshot['forms'];
+  removedForms: Array<{ selector: string; action: string }>;
+  newDialogs: DOMSnapshot['dialogs'];
+  removedDialogs: Array<{ selector: string; role: string }>;
+  newInteractive: DOMSnapshot['interactive'];
+  removedInteractive: Array<{ selector: string; tag: string }>;
+  textChanged: boolean;
+  hashChanged: boolean;
+}
+
+export function diffSnapshots(before: DOMSnapshot, after: DOMSnapshot): SnapshotDiff {
+  const urlChanged = before.url !== after.url ? { from: before.url, to: after.url } : null;
+  const hashChanged = before.hash !== after.hash;
+  const textChanged = before.textContent !== after.textContent;
+
+  const beforeFormKeys = new Set(before.forms.map(f => `${f.selector}:${f.action}`));
+  const afterFormKeys = new Set(after.forms.map(f => `${f.selector}:${f.action}`));
+  const newForms = after.forms.filter(f => !beforeFormKeys.has(`${f.selector}:${f.action}`));
+  const removedForms = before.forms
+    .filter(f => !afterFormKeys.has(`${f.selector}:${f.action}`))
+    .map(f => ({ selector: f.selector, action: f.action }));
+
+  const beforeDialogKeys = new Set(before.dialogs.map(d => d.selector));
+  const afterDialogKeys = new Set(after.dialogs.map(d => d.selector));
+  const newDialogs = after.dialogs.filter(d => !beforeDialogKeys.has(d.selector));
+  const removedDialogs = before.dialogs
+    .filter(d => !afterDialogKeys.has(d.selector))
+    .map(d => ({ selector: d.selector, role: d.role }));
+
+  const beforeInteractiveKeys = new Set(before.interactive.map(i => i.selector));
+  const afterInteractiveKeys = new Set(after.interactive.map(i => i.selector));
+  const newInteractive = after.interactive.filter(i => !beforeInteractiveKeys.has(i.selector));
+  const removedInteractive = before.interactive
+    .filter(i => !afterInteractiveKeys.has(i.selector))
+    .map(i => ({ selector: i.selector, tag: i.tag }));
+
+  return { urlChanged, newForms, removedForms, newDialogs, removedDialogs, newInteractive, removedInteractive, textChanged, hashChanged };
+}
+
+export function formatDiff(diff: SnapshotDiff): string {
+  const parts: string[] = [];
+  if (diff.urlChanged) {
+    parts.push(`Navigated: ${diff.urlChanged.from} → ${diff.urlChanged.to}`);
+  }
+  if (diff.newForms.length > 0) {
+    parts.push(`${diff.newForms.length} new form(s) appeared`);
+  }
+  if (diff.removedForms.length > 0) {
+    parts.push(`${diff.removedForms.length} form(s) removed`);
+  }
+  if (diff.newDialogs.length > 0) {
+    const visibleDialogs = diff.newDialogs.filter(d => d.isVisible);
+    if (visibleDialogs.length > 0) {
+      parts.push(`${visibleDialogs.length} new dialog(s)/modal(s) visible`);
+    }
+  }
+  if (diff.removedDialogs.length > 0) {
+    parts.push(`${diff.removedDialogs.length} dialog(s)/modal(s) dismissed`);
+  }
+  if (diff.newInteractive.length > 0) {
+    parts.push(`${diff.newInteractive.length} new interactive elements`);
+  }
+  if (diff.removedInteractive.length > 0) {
+    parts.push(`${diff.removedInteractive.length} interactive elements removed`);
+  }
+  if (diff.textChanged && !diff.urlChanged) {
+    parts.push('Page content changed without navigation');
+  }
+  return parts.length > 0 ? parts.join('; ') : 'No significant changes detected';
+}
+
+// ── iframe + Shadow DOM support ──
+
+export async function takeSnapshotDeep(page: import('playwright').Page): Promise<DOMSnapshot> {
+  const main = await takeSnapshot(page);
+
+  const frames = page.frames();
+  if (frames.length <= 1) return main;
+
+  for (const frame of frames) {
+    if (frame === page.mainFrame()) continue;
+    try {
+      const frameSnapshot = await frame.evaluate(FRAME_SNAPSHOT_SRC);
+
+      var fs = frameSnapshot as { forms: any[]; interactive: any[] };
+      main.forms.push(...fs.forms);
+      main.interactive.push(...fs.interactive);
+    } catch { /* cross-origin iframe — skip */ }
+  }
+
+  main.hash = hashSnapshot({ url: main.url, title: main.title, forms: main.forms, interactive: main.interactive, dialogs: main.dialogs, overlays: main.overlays, textContent: main.textContent });
+  return main;
+}
+
+

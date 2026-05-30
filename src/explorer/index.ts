@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { crawl, type CrawlOptions } from './crawler';
+import { SpiderCrawler, type CrawlResult as SpiderCrawlResult, type RouteNode } from './spider';
 import type { BrowserSessionManager } from '../core/browser-session';
 import type { AppModelForm } from '../core/app-model';
 import type { ParameterClass } from '../core/app-model';
@@ -150,3 +151,6 @@ function attackHintsFor(cls: ParameterClass['classifiedAs']): string[] {
   };
   return hints[cls] || ['XSS', 'SQL injection'];
 }
+
+export { SpiderCrawler };
+export type { SpiderCrawlResult, RouteNode };

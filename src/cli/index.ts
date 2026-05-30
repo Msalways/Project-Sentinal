@@ -1,16 +1,14 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { select, input, confirm, password } from '@inquirer/prompts';
 import { providerRegistry, type ProviderConfig } from '../providers/provider-registry';
 import { toolRegistry } from '../tools/tool-registry';
-import { readAppModel, writeAppModel, type AppModel, type AppModelEndpoint, type AppModelFormField } from '../core/app-model';
-import { agentRegistry } from '../agents/agent-registry';
+import { readAppModel, writeAppModel, type AppModel } from '../core/app-model';
 import type { LLMProviderName, ScanTarget } from '../core/types';
 import yaml from 'js-yaml';
-import { Logger, colors } from './logger';
-import type { DynamicStructuredTool } from '@langchain/core/tools';
+import { Logger } from './logger';
 
 const log = new Logger();
 
@@ -48,7 +46,7 @@ program
       log.info('Quick start:');
       log.dim('  1. ultimatrix init          — interactive setup');
       log.dim('  2. set OPENAI_API_KEY     — or AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY');
-      log.dim('  3. ultimatrix scan -t <url> — run scan with env vars only');
+      log.dim('  3. ultimatrix assess -t <url> — run assessment with env vars only');
       process.exit(0);
     }
 
@@ -68,80 +66,68 @@ program
   .description('Interactive setup wizard')
   .action(runInit);
 
-// ── scan: Autonomous security assessment ──
-program
-  .command('scan')
-  .description('Run autonomous security assessment')
-  .option('-t, --target <url>', 'Target URL')
-  .option('-o, --output <dir>', 'Output directory')
-  .option('--provider <provider>', 'LLM provider')
-  .option('--model <model>', 'Model ID')
-  .option('--format <format>', 'Report format (html, json, markdown)')
-  .option('--ci', 'CI/CD mode (exit code 1 on critical)')
-  .action(async (opts) => {
-    if (!hasAnyConfig() && !opts.provider && !process.env.OPENAI_API_KEY) {
-      log.error('No provider configured. Run `ultimatrix init` first.');
-      process.exit(1);
-    }
-
-    const config = await loadRuntimeConfig({ ...opts });
-    if (!config.scan?.target && !opts.target) {
-      log.error('No target specified. Use -t <url> or set scan.target in ultimatrix.yaml');
-      process.exit(1);
-    }
-
-    const model = await loadModel(config);
-    const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
-    const outputDir = config.output?.dir || opts.output || './output';
-    const appModelPath = path.join(outputDir, 'app-model.json');
-    const orchestrator = new AutonomousOrchestrator({
-      model,
-      target: { url: config.scan?.target || opts.target } as ScanTarget,
-      outputDir,
-      format: config.output?.format || opts.format || 'markdown',
-      appModelPath,
-    });
-
-    const result = await orchestrator.run();
-
-    if (result.reportPath && fs.existsSync(result.reportPath)) {
-      log.success(`Assessment complete. Report: ${result.reportPath}`);
-    } else {
-      log.warn('Assessment finished but no report file was generated.');
-      log.warn(`Expected at: ${result.reportPath}`);
-    }
-
-    if (opts.ci && result.findings.some((f) => f.severity === 'critical')) {
-      process.exit(1);
-    }
-    process.exit(0);
-  });
-
 // ── assess: LLM-driven security assessment ──
 program
   .command('assess')
-  .description('LLM-driven security assessment — agent navigates, explores, and attacks autonomously')
+  .description('Security assessment — agent explores, records, and tests the target')
   .option('-t, --target <url>', 'Target URL')
   .option('-o, --output <dir>', 'Output directory', './output')
-  .option('--headless', 'Run browser in headless mode')
-  .option('--provider <provider>', 'LLM provider')
+  .option('--headless', 'Run browser in headless mode (visible by default)')
+  .option('--provider <provider>', 'LLM provider (or set env var like OPENAI_API_KEY)')
   .option('--model <model>', 'Model ID')
-  .option('--format <format>', 'Report format (html, json, markdown)')
-  .option('--dashboard', 'Start live WebSocket dashboard during assessment')
-  .option('--dashboard-port <port>', 'Dashboard port', '3000')
-  .option('--with-openapi <path>', 'Path to OpenAPI/Swagger spec to pre-populate endpoints')
-  .option('--with-har <path>', 'Path to HAR file to pre-populate endpoints and cookies')
-  .option('--with-postman <path>', 'Path to Postman collection to pre-populate endpoints')
-  .option('--with-src <path>', 'Path to source code directory to scan for routes and tech stack')
-  .option('--depth <n>', 'Max crawl depth for auto-exploration (default 2, 0 to disable)', '2')
-  .option('--skip-explore', 'Skip automated workflow exploration phase')
+  .option('--learn', 'Interactive mode: crawl, record user flows, generate Playwright tests')
+  .option('--dry-run', 'Validate config and target, then exit')
+  .option('--dashboard', 'Start live WebSocket dashboard')
+  .addOption(new Option('--depth <n>', 'Crawl depth').default('2').hideHelp())
+  .addOption(new Option('--with-openapi <path>', 'Pre-populate from OpenAPI spec').hideHelp())
+  .addOption(new Option('--with-har <path>', 'Pre-populate from HAR file').hideHelp())
+  .addOption(new Option('--with-postman <path>', 'Pre-populate from Postman collection').hideHelp())
+  .addOption(new Option('--with-src <path>', 'Pre-populate from source code').hideHelp())
+  .addOption(new Option('--skip-explore', 'Skip exploration phase').hideHelp())
+  .addOption(new Option('--max-calls <n>', 'Tool call limit').default('50').hideHelp())
+  .addOption(new Option('--keep-browser', 'Keep browser open').hideHelp())
   .action(async (opts) => {
     if (!opts.target) { log.error('No target specified. Use -t <url>'); process.exit(1); }
+
+    if (opts.dryRun) {
+      log.header('Dry Run', 'Validating configuration');
+      log.info(`Target: ${opts.target}`);
+      log.info(`Output: ${opts.output}`);
+      log.info(`Provider: ${opts.provider || 'auto'}`);
+      log.info(`Model: ${opts.model || 'default'}`);
+      try {
+        const mgr = (await import('../tools/browser-tools')).getSharedBrowserManager(!opts.headless);
+        await mgr.getOrCreate('default');
+        log.success('Browser: OK');
+        const page = await mgr.getOrCreate('default');
+        await page.goto(opts.target.replace(/\/$/, ''), { timeout: 10000 });
+        log.success(`Target reachable: ${opts.target}`);
+        await mgr.closeAll();
+      } catch (e) {
+        log.warn(`Target check: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      try {
+        await (await import('../oast')).ensureOastRunning();
+        log.success('OAST server: OK');
+      } catch {
+        log.warn('OAST server: could not start');
+      }
+      log.success('Dry run complete. All checks passed.');
+      process.exit(0);
+    }
+
+    if (opts.learn) {
+      const { runLearn } = await import('./commands/learn');
+      await runLearn(opts.target, opts.output, opts.headless, opts.depth, opts.provider, opts.model);
+      process.exit(0);
+    }
 
     const outDir = path.resolve(opts.output);
     fs.mkdirSync(outDir, { recursive: true });
     const target = opts.target.replace(/\/$/, '');
     const appModelPath = path.join(outDir, 'app-model.json');
+    const { setAppModelPath } = await import('../core/app-model-path');
+    setAppModelPath(appModelPath);
 
     // ── Ingest artifacts if provided ──
     const hasArtifacts = opts.withOpenapi || opts.withHar || opts.withPostman || opts.withSrc;
@@ -159,7 +145,9 @@ program
     }
 
     // ── Create initial app model ──
-    const model = {
+    const { DEFAULT_MODEL } = await import('../core/app-model');
+    const model: AppModel = {
+      ...DEFAULT_MODEL,
       target,
       techStack: initialModel.techStack || [],
       auth: { type: 'unknown' as const, loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
@@ -266,6 +254,8 @@ program
       format: opts.format || 'html',
       appModelPath,
       dashboard,
+      maxToolCalls: opts.maxCalls ? parseInt(opts.maxCalls, 10) : undefined,
+      keepBrowser: opts.keepBrowser || undefined,
     });
 
     const result = await orchestrator.run();
@@ -287,231 +277,6 @@ program
     process.exit(0);
   });
 
-// ── learn: Two-phase app flow mapping ──
-program
-  .command('learn')
-  .description('Phase 1: auto-crawl all routes. Phase 2: interactive user workflow recording — generates site-map, HAR, Playwright tests')
-  .option('-t, --target <url>', 'Target URL')
-  .option('-o, --output <dir>', 'Output directory', './output')
-  .option('--headless', 'Run browser in headless mode')
-  .option('--depth <n>', 'Crawl depth (default 2)', '2')
-  .option('--provider <provider>', 'LLM provider')
-  .option('--model <model>', 'Model ID')
-  .action(async (opts) => {
-    if (!opts.target) { log.error('No target specified. Use -t <url>'); process.exit(1); }
-
-    const outDir = path.resolve(opts.output);
-    fs.mkdirSync(outDir, { recursive: true });
-    const target = opts.target.replace(/\/$/, '');
-
-    const { getSharedBrowserManager: getMgr } = await import('../tools/browser-tools');
-    const mgr = getMgr(opts.headless);
-
-    // ── Phase 1: Spider crawl ──
-    log.header('Phase 1: Spider Crawl', target);
-    const { SpiderCrawler } = await import('../core/spider');
-    const spider = new SpiderCrawler(mgr);
-    const crawlResult = await spider.crawl(target, parseInt(opts.depth, 10) || 2);
-
-    // Save spider trace as HAR
-    if (crawlResult.trace.length > 0) {
-      const { traceToHar } = await import('../flow/build-from-trace');
-      fs.writeFileSync(path.join(outDir, 'spider-session.har'), traceToHar(crawlResult.trace));
-    }
-
-    // Write site-map
-    const siteMap = {
-      baseUrl: crawlResult.baseUrl,
-      totalRoutes: crawlResult.totalRoutes,
-      maxDepth: crawlResult.maxDepth,
-      durationMs: crawlResult.durationMs,
-      routes: crawlResult.routes,
-      errors: crawlResult.errors,
-    };
-    fs.writeFileSync(path.join(outDir, 'site-map.json'), JSON.stringify(siteMap, null, 2));
-    const yamlLines = [
-      `# Site Map — ${crawlResult.baseUrl}`,
-      `crawled: ${new Date().toISOString()}`,
-      `totalRoutes: ${crawlResult.totalRoutes}`,
-      `maxDepth: ${crawlResult.maxDepth}`,
-      `durationMs: ${crawlResult.durationMs}`,
-      ``,
-      `routes:`,
-      ...crawlResult.routes.map((r) => `  - path: ${r.path}\n    title: ${r.title}\n    depth: ${r.depth}\n    forms: ${r.forms}\n    links: ${r.linkCount}`),
-    ];
-    fs.writeFileSync(path.join(outDir, 'site-map.yaml'), yamlLines.join('\n'));
-
-    log.success(`Crawl complete — ${crawlResult.totalRoutes} routes in ${crawlResult.durationMs}ms`);
-    log.info(`Routes found:`);
-    for (const r of crawlResult.routes) {
-      log.dim(`  [depth ${r.depth}] ${r.path} — ${r.title}`);
-    }
-    if (crawlResult.errors.length > 0) {
-      log.warn(`${crawlResult.errors.length} errors during crawl:`);
-      for (const e of crawlResult.errors.slice(0, 5)) log.dim(`  ${e.url}: ${e.error}`);
-    }
-
-    // ── Phase 2: Interactive user flow ──
-    log.divider();
-    log.header('Phase 2: User Flow', 'Interactive session recording');
-    log.info(`Session ready. ${crawlResult.totalRoutes} routes crawled. Type actions (e.g., "go to /login", "click Sign Up"). Type /close to finish.`);
-
-    const { createDeepAgent } = await import('deepagents');
-    const { fixWriteTodosMiddleware } = await import('../core/fix-todos');
-    const { toolRegistry: toolReg } = await import('../tools/tool-registry');
-    const config = await loadRuntimeConfig({ ...opts });
-    const model = await loadModel(config);
-
-    // Start trace on 'default' session — browser tools default to this
-    await mgr.startTrace('default');
-    mgr.startRecording('default');
-
-    const allTools = toolReg.getByCategory('browser') as DynamicStructuredTool[];
-    const traceTool = toolReg.get('build_flow_from_trace');
-    if (traceTool) allTools.push(traceTool);
-
-    const agent = createDeepAgent({
-      model,
-      tools: allTools,
-      middleware: [fixWriteTodosMiddleware],
-      systemPrompt: `You are recording a user workflow on ${target}. The browser already has an open session.
-
-Discovered routes (${crawlResult.routes.length}):
-${crawlResult.routes.map((r) => `  ${r.path} — ${r.title} (${r.forms} forms, ${r.linkCount} links)`).join('\n')}
-
-${crawlResult.routes.length <= 1 ? '⚠️  Few routes discovered — this may be a private app behind login. Ask the user to navigate to the login page and authenticate.\n' : ''}
-
-RULES:
-1. The browser is already on a page. Check the current URL before navigating — only navigate if the user explicitly wants a different page.
-2. Use browser_fill to fill inputs, browser_click to click, browser_press_key for keyboard actions (Enter to submit, Escape to close, Tab to navigate).
-3. Use browser_extract(type="text") to read visible page content. Avoid dumping raw HTML.
-4. After each action, briefly describe what happened in 1 sentence. Do not echo raw tool output.
-5. Wait for the user's next instruction after each action.`,
-    });
-
-    const { createInterface } = await import('readline');
-    const chalk = (await import('chalk')).default;
-    const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: chalk.cyan('> ') });
-
-    rl.write(`Session ready. ${crawlResult.totalRoutes} routes crawled. Type actions or /close.\n`);
-    rl.write(`  /close       — finish and generate Playwright test file\n`);
-    rl.write(`  /record start — start manual browser recording\n`);
-    rl.write(`  /record stop  — stop recording and merge steps\n`);
-    rl.prompt();
-
-    for await (const line of rl) {
-      const input = line.trim();
-      if (input === '/close' || input === '/quit') break;
-      if (!input) { rl.prompt(); continue; }
-
-      // ── Manual recording in learn phase ──
-      if (input.startsWith('/record')) {
-        const sub = input.split(/\s+/)[1] || 'start';
-        if (sub === 'start') {
-          await mgr.startManualRecording('default');
-          log.info('Manual recording started. Interact with the visible browser directly. Type /record stop when done.');
-        } else if (sub === 'stop') {
-          const steps = await mgr.stopManualRecording('default');
-          if (steps.length > 0) {
-            log.success(`Captured ${steps.length} manual steps.`);
-            const summary = steps.map((s, i) => `  ${i + 1}. ${s.type}${s.selector ? ` → ${s.selector}` : ''}${s.value ? ` = "${s.value.slice(0, 60)}"` : ''}${s.url ? ` → ${s.url}` : ''}`).join('\n');
-            console.log(summary);
-            // Merge into recording
-            const existing = mgr.getRecording('default');
-            for (const s of steps) existing.push(s);
-          } else {
-            log.warn('No manual steps captured.');
-          }
-        } else {
-          const steps = mgr.getRecording('default');
-          log.info(`Manual recording active: ${steps.length} steps so far.`);
-        }
-        rl.prompt();
-        continue;
-      }
-
-      const stream = await agent.stream(
-        { messages: [{ role: 'user', content: input }] },
-        { streamMode: 'messages', subgraphs: true },
-      );
-
-      for await (const [, chunk] of stream) {
-        const msg = chunk?.[0];
-        if (!msg) continue;
-        if (msg.text) process.stdout.write(msg.text);
-
-        if ((msg as any)._getType?.() === 'tool') {
-          const result = msg.content;
-          const s = typeof result === 'string' ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200);
-          if (s?.trim()) process.stdout.write('\n' + colors.dim(`  [${s.replace(/\n/g, ' ').trim()}]\n`));
-        }
-      }
-
-      process.stdout.write('\n');
-      rl.prompt();
-    }
-
-    rl.close();
-    log.divider();
-
-    // ── Write recorded flow ──
-    const userTrace = mgr.stopTrace('default');
-    const userSteps = mgr.stopRecording('default');
-    if (userTrace.length > 0) {
-      const { traceToHar: toHar } = await import('../flow/build-from-trace');
-      fs.writeFileSync(path.join(outDir, 'user-session.har'), toHar(userTrace));
-    }
-    const { generatePlaywrightTest } = await import('../flow/generate-test');
-    const { filePath: flowPath } = generatePlaywrightTest({
-      steps: userSteps,
-      target,
-      outputDir: outDir,
-      totalRoutes: crawlResult.totalRoutes,
-    });
-
-    log.success(`User flow recorded: ${userSteps.length} actions → ${flowPath}`);
-    await spider.close();
-    await new Promise((r) => setTimeout(r, 500));
-
-    log.header('Mapping Complete', `Artifacts in ${opts.output}`);
-    log.dim(`  site-map.json — ${crawlResult.totalRoutes} routes`);
-    log.dim(`  site-map.yaml — route tree`);
-    log.dim(`  spider-session.har — ${crawlResult.trace.length} network entries`);
-    log.dim(`  spider-recording — ${crawlResult.recording.length} steps`);
-    log.dim(`  user-session.har — ${userTrace.length} network entries`);
-    log.dim(`  user-flow.spec.ts — ${userSteps.length} test steps`);
-    process.exit(0);
-  });
-
-// ── demo: Quick mock scan ──
-program
-  .command('demo')
-  .description('Run demo assessment (no API key needed)')
-  .option('-o, --output <dir>', 'Output directory', './output')
-  .action(async (opts) => {
-    const { createUltimatrix } = await import('../index');
-    const ultimatrix = createUltimatrix({ provider: 'mock', apiKey: 'mock' });
-    const result = await ultimatrix.demo();
-    log.success(`Risk: ${result.riskScore}/100 (${result.riskLevel.toUpperCase()})`);
-    log.info(`Findings: ${result.findings.length}`);
-    for (const f of result.findings) {
-      log.dim(`  [${f.severity.toUpperCase()}] ${f.title}`);
-    }
-    const reportPath = ultimatrix.generateReport(result, opts.output, 'html');
-    log.info(`Report: ${reportPath}`);
-  });
-
-// ── providers: List LLM providers ──
-program
-  .command('providers')
-  .description('List available LLM providers')
-  .action(() => {
-    for (const p of providerRegistry.listAll()) {
-      log.info(`${p.name} — ${p.label}`);
-      log.dim(`  Env vars: ${p.envVars.join(', ')}`);
-    }
-  });
-
 // ── tools: List security tools ──
 program
   .command('tools')
@@ -527,16 +292,6 @@ program
         log.info(category);
         for (const name of names) log.dim(`  ${name}`);
       }
-    }
-  });
-
-// ── agents: List AI agents ──
-program
-  .command('agents')
-  .description('List AI agent roles')
-  .action(() => {
-    for (const agent of agentRegistry.getAll()) {
-      log.info(`${agent.name}: ${agent.description}`);
     }
   });
 
@@ -784,12 +539,33 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
 
 async function loadModel(config: any) {
   const providerName = config.provider?.name;
-  const apiKey = config.provider?.apiKey || 'mock';
+  const apiKey = config.provider?.apiKey;
   const modelId = config.provider?.model || 'gpt-4o';
 
-  if (!providerName || providerName === 'mock' || !apiKey) {
-    const { FakeListChatModel } = require('@langchain/core/utils/testing');
-    return new FakeListChatModel({ responses: ['Mock mode'] });
+  if (!providerName && !apiKey) {
+    throw new Error(
+      'No LLM provider configured. Run "ultimatrix init" to set up your API keys, ' +
+      'or set an environment variable like OPENAI_API_KEY or NVIDIA_API_KEY.'
+    );
+  }
+  if (!providerName) {
+    throw new Error(
+      'Provider name not found in ultimatrix.yaml or env vars. ' +
+      'Run "ultimatrix init" or set a provider env var like OPENAI_API_KEY.'
+    );
+  }
+  if (!apiKey) {
+    const providersPath = path.join(os.homedir(), '.config', 'ultimatrix', 'providers.yaml');
+    if (fs.existsSync(providersPath)) {
+      throw new Error(
+        `providers.yaml found at ${providersPath} but no apiKey entry for provider '${providerName}'. ` +
+        `Run "ultimatrix init" to reconfigure, or set ${providerEnvVar(providerName)} env var.`
+      );
+    }
+    throw new Error(
+      `No apiKey for provider '${providerName}'. ` +
+      `Set ${providerEnvVar(providerName)} env var or run "ultimatrix init".`
+    );
   }
 
   return providerRegistry.create(providerName as LLMProviderName, {
@@ -879,7 +655,7 @@ async function runInit() {
   }
 
   log.divider();
-  log.success('Setup complete. Run \x1b[1multimatrix\x1b[0m to start, or \x1b[1multimatrix scan -t <url>\x1b[0m for autonomous scan');
+  log.success('Setup complete. Run \x1b[1multimatrix\x1b[0m to start, or \x1b[1multimatrix assess -t <url>\x1b[0m for assessment');
 }
 
 function deepMerge(target: any, source: any): any {

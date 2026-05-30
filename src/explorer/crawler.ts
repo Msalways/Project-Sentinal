@@ -96,47 +96,59 @@ export async function crawl(options: CrawlOptions): Promise<CrawlResult> {
       const timestamp = Date.now();
       recorder.clear();
 
+      let success = false;
       try {
         if (interaction.type === 'click') {
           const el = await page.$(interaction.targetSelector);
-          if (!el) continue;
+          if (!el) { log(`    selector not found: ${interaction.targetSelector}`); continue; }
           await el.click();
         } else if (interaction.type === 'fill_and_submit') {
           const form = await page.$(interaction.targetSelector);
-          if (!form) continue;
+          if (!form) { log(`    form not found: ${interaction.targetSelector}`); continue; }
 
-          // Fill each field
           for (const [name, value] of Object.entries(interaction.formData || {})) {
             const field = await form.$(`[name="${name}"]`);
-            if (field) {
-              await field.fill(value);
-            }
+            if (field) await field.fill(value);
           }
 
-          // Look for submit button
           const submitBtn = await form.$('button[type="submit"], input[type="submit"]');
           if (submitBtn) {
             await submitBtn.click();
           } else {
-            // Submit form via enter on last field
             const lastField = await form.$('input:not([type="hidden"])');
             if (lastField) await lastField.press('Enter');
           }
-        } else if (interaction.type === 'navigate') {
-          const el = await page.$(interaction.targetSelector);
-          if (!el) continue;
-          await el.click();
         }
 
-        // Wait for network + JS rendering
         await page.waitForTimeout(1000);
+        try { await page.waitForLoadState('load', { timeout: 5000 }); } catch {}
+        success = true;
+      } catch (e) {
+        var errMsg = (e as Error).message || String(e);
+        log(`    ${errMsg.replace(/\n/g, ' ').slice(0, 200)}`);
+        // Retry once after pressing Escape to dismiss any blocking popup
         try {
-          await page.waitForLoadState('load', { timeout: 5000 });
-        } catch {}
-
-      } catch {
-        log(`    failed`);
-        continue;
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
+          if (interaction.type === 'click') {
+            const el = await page.$(interaction.targetSelector);
+            if (el) { await el.click(); success = true; }
+          } else if (interaction.type === 'fill_and_submit') {
+            const form = await page.$(interaction.targetSelector);
+            if (form) {
+              for (const [name, value] of Object.entries(interaction.formData || {})) {
+                const field = await form.$(`[name="${name}"]`);
+                if (field) await field.fill(value);
+              }
+              const submitBtn = await form.$('button[type="submit"], input[type="submit"]');
+              if (submitBtn) { await submitBtn.click(); success = true; }
+            }
+          }
+          if (success) { await page.waitForTimeout(1000); try { await page.waitForLoadState('load', { timeout: 5000 }); } catch {} }
+        } catch (e2) {
+          log(`    retry failed: ${((e2 as Error).message || String(e2)).replace(/\n/g, ' ').slice(0, 200)}`);
+        }
+        if (!success) { log(`    failed`); continue; }
       }
 
       const afterSnapshot = await takeSnapshot(page);

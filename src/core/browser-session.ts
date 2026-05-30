@@ -47,7 +47,11 @@ interface SessionState {
 export class BrowserSessionManager {
   private sessions = new Map<string, SessionState>();
   private recordings = new Map<string, MacroStep[]>();
+  private stepStreams = new Map<string, fs.WriteStream>();
   private headless: boolean;
+  framework = '';
+
+  setFramework(fw: string) { this.framework = fw; }
 
   constructor(headless = false) {
     this.headless = headless;
@@ -73,9 +77,10 @@ export class BrowserSessionManager {
         '--disable-dev-shm-usage',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-popup-blocking',
+      '--start-maximized',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-popup-blocking',
         '--disable-session-crashed-bubble',
         '--disable-component-update',
         '--no-service-autorun',
@@ -110,6 +115,7 @@ export class BrowserSessionManager {
     });
 
     this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false, label: options?.label, userAgent: options?.userAgent });
+    if (!this.headless) page.bringToFront().catch(() => {});
     return page;
   }
 
@@ -191,14 +197,18 @@ export class BrowserSessionManager {
   private record(sessionId: string, step: MacroStep): void {
     const recording = this.recordings.get(sessionId);
     if (recording) recording.push(step);
+    const stream = this.stepStreams.get(sessionId);
+    if (stream) stream.write(JSON.stringify(step) + '\n');
   }
 
   private manualListeners = new Map<string, () => void>();
 
   /** Start recording manual user interactions in the visible Playwright browser.
    *  The human can click, type, and navigate directly in the browser window.
-   *  These actions are captured as MacroStep entries via injected DOM listeners. */
-  async startManualRecording(sessionId: string): Promise<string> {
+   *  These actions are captured as MacroStep entries via injected DOM listeners.
+   *  If streamPath is provided, each step is appended as a JSON line to that file.
+   *  If onStep is provided, each captured step is also passed to this callback in real time. */
+  async startManualRecording(sessionId: string, streamPath?: string, onStep?: (step: MacroStep) => void): Promise<string> {
     if (this.manualListeners.has(sessionId)) {
       return `Manual recording already active for session "${sessionId}".`;
     }
@@ -208,80 +218,94 @@ export class BrowserSessionManager {
     // Ensure a recording buffer exists
     if (!this.recordings.has(sessionId)) this.startRecording(sessionId);
 
+    // Open write stream for NDJSON if path provided
+    if (streamPath) {
+      fs.mkdirSync(path.dirname(streamPath), { recursive: true });
+      this.stepStreams.set(sessionId, fs.createWriteStream(streamPath, { flags: 'a' }));
+    }
+
     // Expose Node.js callbacks to the browser page
     await page.exposeFunction('__ul_recordClick', (selector: string) => {
-      this.record(sessionId, { type: 'click', selector });
+      const step: MacroStep = { type: 'click', selector };
+      this.record(sessionId, step);
+      onStep?.(step);
     });
 
     await page.exposeFunction('__ul_recordInput', (selector: string, value: string) => {
-      this.record(sessionId, { type: 'fill', selector, value });
+      const step: MacroStep = { type: 'fill', selector, value };
+      this.record(sessionId, step);
+      onStep?.(step);
     });
 
     await page.exposeFunction('__ul_recordNavigate', (url: string) => {
-      this.record(sessionId, { type: 'navigate', url });
+      const step: MacroStep = { type: 'navigate', url };
+      this.record(sessionId, step);
+      onStep?.(step);
     });
 
     // Inject DOM event listeners into the page
-    await page.evaluate(() => {
-      const prevCleanup = (window as any).__ul_cleanup;
-      if (typeof prevCleanup === 'function') prevCleanup();
+    // Use string evaluate to avoid esbuild/tsx keepNames __name wrapping
+    const injectScript = `(function() {
+      var prev = window.__ul_cleanup;
+      if (typeof prev === 'function') prev();
 
-      const clickHandler = (e: MouseEvent) => {
-        const el = e.target as HTMLElement;
-        if (!el || !el.tagName) return;
-        const sel = generateSel(el);
-        (window as any).__ul_recordClick(sel);
-      };
-
-      const inputHandler = (e: Event) => {
-        const el = e.target as HTMLInputElement | HTMLTextAreaElement;
-        if (!el || !el.tagName) return;
-        // Only capture user-initiated input on named fields
-        if (!el.name && !el.id) return;
-        const val = (el as any).value;
-        if (val === undefined || val === null) return;
-        if ((window as any).__ul_inputTimer) clearTimeout((window as any).__ul_inputTimer);
-        (window as any).__ul_inputTimer = setTimeout(() => {
-          const sel = generateSel(el);
-          (window as any).__ul_recordInput(sel, String(val));
-        }, 400);
-      };
-
-      document.addEventListener('click', clickHandler, true);
-      document.addEventListener('input', inputHandler, true);
-
-      (window as any).__ul_cleanup = () => {
-        document.removeEventListener('click', clickHandler, true);
-        document.removeEventListener('input', inputHandler, true);
-      };
-
-      function generateSel(el: HTMLElement): string {
-        if (el.id) return `#${CSS.escape(el.id)}`;
-        const tag = el.tagName.toLowerCase();
-        const cls = Array.from(el.classList).slice(0, 2).map(c => CSS.escape(c)).join('.');
-        if (cls) return `${tag}.${cls}`;
-        const parent = el.parentElement;
-        if (parent) {
-          const idx = Array.from(parent.children).indexOf(el) + 1;
-          return `${tag}:nth-child(${idx})`;
-        }
-        return tag;
+      function gen(el) {
+        if (el.id) return '#' + CSS.escape(el.id);
+        var t = el.tagName.toLowerCase();
+        var c = Array.from(el.classList).slice(0, 2).map(function(x) { return CSS.escape(x); }).join('.');
+        if (c) return t + '.' + c;
+        var p = el.parentElement;
+        if (p) { var i = Array.from(p.children).indexOf(el) + 1; return t + ':nth-child(' + i + ')'; }
+        return t;
       }
-    });
+
+      function ch(e) {
+        var el = e.target;
+        if (!el || !el.tagName) return;
+        window.__ul_recordClick(gen(el));
+      }
+      function ih(e) {
+        var el = e.target;
+        if (!el || !el.tagName || (!el.name && !el.id)) return;
+        var v = el.value;
+        if (v === undefined || v === null) return;
+        if (window.__ul_t) clearTimeout(window.__ul_t);
+        window.__ul_t = setTimeout(function() { window.__ul_recordInput(gen(el), String(v)); }, 400);
+      }
+
+      document.addEventListener('click', ch, true);
+      document.addEventListener('input', ih, true);
+
+      window.__ul_cleanup = function() {
+        document.removeEventListener('click', ch, true);
+        document.removeEventListener('input', ih, true);
+      };
+    })()`;
+
+    await page.evaluate(injectScript);
 
     // Detect full-page navigations from URL changes
     const navHandler = (frame: any) => {
       if (frame === page.mainFrame()) {
         const url = frame.url();
         if (url && url !== 'about:blank') {
-          this.record(sessionId, { type: 'navigate', url });
+          const step: MacroStep = { type: 'navigate', url };
+          this.record(sessionId, step);
+          onStep?.(step);
         }
       }
     };
     page.on('framenavigated', navHandler);
 
+    // Re-inject DOM listeners after every page load (survives navigation)
+    const loadReInject = () => {
+      page.evaluate(injectScript).catch(() => {});
+    };
+    page.on('load', loadReInject);
+
     this.manualListeners.set(sessionId, () => {
       page.removeListener('framenavigated', navHandler);
+      page.removeListener('load', loadReInject);
     });
 
     return `Manual recording started for session "${sessionId}". Interact with the visible browser window directly — clicks, fills, and navigations are captured.`;
@@ -295,16 +319,23 @@ export class BrowserSessionManager {
       this.manualListeners.delete(sessionId);
     }
 
+    // Close the step stream
+    const stream = this.stepStreams.get(sessionId);
+    if (stream) {
+      stream.end();
+      this.stepStreams.delete(sessionId);
+    }
+
     try {
       const page = this.sessions.get(sessionId)?.page;
       if (page) {
-        await page.evaluate(() => {
-          if (typeof (window as any).__ul_cleanup === 'function') (window as any).__ul_cleanup();
-          delete (window as any).__ul_cleanup;
-          delete (window as any).__ul_recordClick;
-          delete (window as any).__ul_recordInput;
-          delete (window as any).__ul_recordNavigate;
-        }).catch(() => {});
+        await page.evaluate(`(function() {
+          if (typeof window.__ul_cleanup === 'function') window.__ul_cleanup();
+          delete window.__ul_cleanup;
+          delete window.__ul_recordClick;
+          delete window.__ul_recordInput;
+          delete window.__ul_recordNavigate;
+        })()`).catch(() => {});
       }
     } catch { /* best effort */ }
 
@@ -314,6 +345,7 @@ export class BrowserSessionManager {
 
   async navigate(sessionId: string, url: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
+    if (!this.headless) page.bringToFront().catch(() => {});
     try {
       await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     } catch {
@@ -331,6 +363,7 @@ export class BrowserSessionManager {
 
   async click(sessionId: string, selector: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
+    if (!this.headless) page.bringToFront().catch(() => {});
     try {
       await page.waitForSelector(selector, { timeout: 10000 });
       try {
@@ -364,36 +397,19 @@ export class BrowserSessionManager {
 
   async fill(sessionId: string, selector: string, value: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
-    try {
-      await page.waitForSelector(selector, { timeout: 5000 });
-      await page.fill(selector, value, { force: true });
-    } catch {
-      const ok = await page.evaluate(([sel, val]) => {
-        const el = document.querySelector(sel) as HTMLElement | null;
-        if (!el) return false;
-        if ((el as HTMLTextAreaElement | HTMLInputElement | null)?.value !== undefined) {
-          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype, 'value'
-          )?.set || Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value'
-          )?.set;
-          if (nativeInputValueSetter) {
-            nativeInputValueSetter.call(el, val);
-          } else {
-            (el as HTMLTextAreaElement).value = val;
-          }
-        } else if (el.isContentEditable) {
-          el.textContent = '';
-          document.execCommand('insertText', false, val);
-        } else {
-          return false;
-        }
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }, [selector, value]);
-      if (!ok) return `Could not find element matching "${selector}"`;
-    }
+    if (!this.headless) page.bringToFront().catch(() => {});
+    try { await page.waitForSelector(selector, { timeout: 5000 }); } catch {}
+    // Focus and clear
+    await page.evaluate((sel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (el) el.focus();
+    }, selector);
+    await page.keyboard.press('End');
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('Home');
+    await page.keyboard.up('Shift');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.insertText(value);
     this.record(sessionId, { type: 'fill', selector, value });
     return `Filled: ${selector}`;
   }

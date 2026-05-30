@@ -73,7 +73,7 @@ export type {
   ScanEvent, ScanEventCallback, ScanEventEmitter, ScanEventType, OWASPCategory,
 } from './core/types';
 export type { Message, ToolDefinition, ToolCall, LLMResponse, LLMProvider } from './core/llm';
-export { ok, err, asyncResult, type Result } from './core/result';
+
 export type { ToolRegistryEntry, ToolRegistry } from './tools/tool-registry';
 export type { AgentRegistryEntry, AgentRegistry } from './agents/agent-registry';
 export type { ProviderFactory, ProviderRegistry } from './providers/provider-registry';

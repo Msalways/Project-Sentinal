@@ -1,17 +1,20 @@
 import { z } from 'zod';
 import { tool, DynamicStructuredTool } from '@langchain/core/tools';
 import { readAppModelSection, updateAppModelSection, type AppModelSection } from '../core/app-model';
+import { getAppModelPath } from '../core/app-model-path';
 
 const VALID_SECTIONS: AppModelSection[] = [
   'target', 'techStack', 'auth', 'workflow', 'endpoints', 'forms', 'scripts',
   'cookies', 'localStorage', 'findings', 'verifications', 'parameterClassifications',
   'authBoundaries', 'recordedSessions', 'hypotheses', 'nextSteps', 'visitedUrls',
-  'oastCallbacks', 'coverage',
+  'oastCallbacks', 'coverage', 'currentPage', 'warnings', 'eventLog', 'artifacts',
+  'browserSessions', 'navigationHistory', 'errors', '_meta',
 ];
 
 export function createReadAppModelTool(): DynamicStructuredTool {
   return tool(async (input) => {
-    const { path, section } = ReadAppModelSchema.parse(input);
+    const { section } = ReadAppModelSchema.parse(input);
+    const path = getAppModelPath();
     if (section) {
       const data = readAppModelSection(path, section as AppModelSection);
       return JSON.stringify({ section, data }, null, 2);
@@ -29,7 +32,8 @@ export function createReadAppModelTool(): DynamicStructuredTool {
 
 export function createUpdateAppModelTool(): DynamicStructuredTool {
   return tool(async (input) => {
-    const { path, section, data, merge } = UpdateAppModelSchema.parse(input);
+    const { section, data, merge } = UpdateAppModelSchema.parse(input);
+    const path = getAppModelPath();
     if (!VALID_SECTIONS.includes(section as AppModelSection)) {
       return JSON.stringify({ error: `Invalid section "${section}". Valid sections: ${VALID_SECTIONS.join(', ')}` });
     }
@@ -43,13 +47,11 @@ export function createUpdateAppModelTool(): DynamicStructuredTool {
 }
 
 const ReadAppModelSchema = z.object({
-  path: z.string().describe('File path to the app model JSON file'),
-  section: z.string().optional().describe('Optional section name: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage'),
+  section: z.string().optional().catch(undefined).describe('Optional section name: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage, currentPage, warnings, eventLog, artifacts, browserSessions, navigationHistory, errors, _meta'),
 });
 
 const UpdateAppModelSchema = z.object({
-  path: z.string().describe('File path to the app model JSON file'),
-  section: z.string().describe('Section name: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage'),
+  section: z.string().describe('Section name: target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage, currentPage, warnings, eventLog, artifacts, browserSessions, navigationHistory, errors, _meta'),
   data: z.any().describe('The data to write to this section. For arrays, new items are merged (deduplicated by path/name/src). For objects, keys are merged at the top level.'),
   merge: z.boolean().optional().default(true).describe('Whether to merge with existing data (true) or overwrite entirely (false). Default: true'),
 });

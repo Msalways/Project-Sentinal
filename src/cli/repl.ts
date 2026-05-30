@@ -90,6 +90,8 @@ export async function startRepl(config: {
 
   // Load app model context if exists
   const appModelPath = path.join(config.outputDir, 'app-model.json');
+  const { setAppModelPath } = await import('../core/app-model-path');
+  setAppModelPath(appModelPath);
   let appModelContext = '';
   let isPrivateApp = false;
   let privateAppReason = '';
@@ -134,10 +136,65 @@ ${isPrivateApp ? `⚠️  ${privateAppReason} — focus on navigating through au
 
   rl.prompt();
 
+  // SIGINT handler — clean up on Ctrl+C
+  process.on('SIGINT', async () => {
+    log.info('\nSaving state before exit...');
+    try {
+      const mgr = getSharedBrowserManager();
+      await mgr.closeAll();
+    } catch { /* best effort */ }
+    process.exit(0);
+  });
+
   for await (const line of rl) {
     const input = line.trim();
     if (!input) { rl.prompt(); continue; }
-    if (input === '/quit') { log.info('Goodbye.'); rl.close(); process.exit(0); }
+
+    // ── Slash commands ──
+    if (input === '/quit' || input === '/exit') { log.info('Goodbye.'); rl.close(); process.exit(0); }
+    if (input === '/help') {
+      log.info('Commands:');
+      log.dim('  /help               — show this message');
+      log.dim('  /quit               — exit');
+      log.dim('  /save               — save conversation to disk');
+      log.dim('  /status             — show session status');
+      log.dim('  /record start       — start manual browser recording');
+      log.dim('  /record stop [name] — stop recording and save to app model');
+      log.dim('  /record status      — check recording progress');
+      rl.prompt();
+      continue;
+    }
+    if (input === '/status') {
+      try {
+        const page = await mgr.getOrCreate('default');
+        const url = page.url();
+        const steps = mgr.getRecording('default');
+        log.info(`URL: ${url}`);
+        log.info(`Recording: ${steps.length} steps`);
+        log.info(`Session: default`);
+        if (fs.existsSync(appModelPath)) {
+          const model = readAppModel(appModelPath);
+          log.info(`App model: ${model.workflow.nodes.length} nodes, ${model.findings.length} findings`);
+        }
+      } catch {
+        log.warn('No active session.');
+      }
+      rl.prompt();
+      continue;
+    }
+    if (input === '/save') {
+      const transcript = messages.map(m => {
+        const role = m.role || m.type || 'unknown';
+        const content = typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500);
+        return `[${role}] ${content}`;
+      }).join('\n---\n');
+      const savePath = path.join(config.outputDir, `repl-transcript-${Date.now()}.txt`);
+      fs.mkdirSync(config.outputDir, { recursive: true });
+      fs.writeFileSync(savePath, transcript, 'utf-8');
+      log.success(`Transcript saved to ${savePath}`);
+      rl.prompt();
+      continue;
+    }
 
     // ── Handle manual record commands ──
     if (input.startsWith('/record')) {
@@ -160,11 +217,16 @@ ${isPrivateApp ? `⚠️  ${privateAppReason} — focus on navigating through au
           ).join('\n');
           log.info(`Captured ${steps.length} steps for "${label}":`);
           console.log(summary);
-          log.dim('Now tell the assistant to save these steps to the app model for later replay.');
-          messages.push({
-            role: 'user',
-            content: `I just manually recorded ${steps.length} browser steps named "${label}" in the session. Save these steps to the app model's recordedSections section with the name "${label}" so we can replay them later using browser_replay_macro.`,
-          });
+          // Merge into in-memory recording + persist to app model
+          const existing = mgr.getRecording('default');
+          for (const s of steps) existing.push(s);
+          if (fs.existsSync(appModelPath)) {
+            const { updateAppModelSection } = await import('../core/app-model');
+            updateAppModelSection(appModelPath, 'recordedSessions', { [label]: steps }, true);
+            log.dim(`Saved "${label}" (${steps.length} steps) to app model.`);
+          } else {
+            log.dim('No app model found — steps saved in-memory only. Run "ultimatrix learn" first to create one.');
+          }
         }
       } else if (subcommand === 'status') {
         const steps = mgr.getRecording('default');
@@ -243,6 +305,40 @@ ${isPrivateApp ? `⚠️  ${privateAppReason} — focus on navigating through au
           role: 'system',
           content: `[Page updated — now at ${currentSnapshot.url}]\n${formatPageContext(currentSnapshot)}`,
         });
+
+        // Auto-write discovered data to app model
+        if (fs.existsSync(appModelPath)) {
+          const { updateAppModelSection } = await import('../core/app-model');
+          if (currentSnapshot.forms.length > 0) {
+            const formEntries = currentSnapshot.forms.map(f => ({
+              pageUrl: currentSnapshot!.url,
+              action: f.action,
+              method: f.method,
+              fields: f.fields,
+            }));
+            updateAppModelSection(appModelPath, 'forms', formEntries, true);
+          }
+          try {
+            const ctxCookies = await page.context().cookies();
+            if (ctxCookies.length > 0) {
+              const cookieRecord: Record<string, string> = {};
+              for (const c of ctxCookies) cookieRecord[c.name] = c.value;
+              updateAppModelSection(appModelPath, 'cookies', cookieRecord, true);
+            }
+            const scripts = await page.evaluate(() =>
+              Array.from(document.querySelectorAll('script[src]')).map(s => ({
+                src: (s as HTMLScriptElement).src,
+                async: (s as HTMLScriptElement).async,
+                defer: (s as HTMLScriptElement).defer,
+              }))
+            );
+            if (scripts.length > 0) {
+              updateAppModelSection(appModelPath, 'scripts', scripts, true);
+            }
+            const currentUrl = page.url();
+            updateAppModelSection(appModelPath, 'visitedUrls', [currentUrl], true);
+          } catch { /* best effort */ }
+        }
       } catch { /* page might be gone */ }
     }
 

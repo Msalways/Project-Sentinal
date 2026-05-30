@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
 [![45 Tools](https://img.shields.io/badge/Tools-45-brightgreen.svg)](#tools)
 [![11 Providers](https://img.shields.io/badge/LLM%20Providers-11-blueviolet.svg)](#configure-llm-provider)
-[![327 Tests](https://img.shields.io/badge/Tests-327%20passing-success.svg)](#testing)
+[![297 Tests](https://img.shields.io/badge/Tests-297%20passing-success.svg)](#testing)
 
 ---
 
@@ -56,14 +56,18 @@ ultimatrix assess -t https://target.com -o ./output \
 
 # Live dashboard
 ultimatrix assess -t https://target.com -o ./output --dashboard
-```
 
-### `scan` — Autonomous pentest
+# Dry-run validation (checks browser + target + OAST, no agent)
+ultimatrix assess -t https://target.com --dry-run
 
-Legacy entry point, checks for existing `app-model.json` in output dir and passes it to the agent.
+# Interactive learning mode: crawl + record user flows
+ultimatrix assess --learn -t https://target.com -o ./output
 
-```bash
-ultimatrix scan -t https://target.com -o ./output
+# Limit tool calls (default 50)
+ultimatrix assess -t https://target.com --max-calls 100
+
+# Keep browser open after assessment for inspection
+ultimatrix assess -t https://target.com --keep-browser
 ```
 
 ### `verify` — Re-run findings against new deployment
@@ -76,7 +80,7 @@ ultimatrix verify -a ./output/app-model.json -t https://new-deployment.com
 
 ### `interact` — Live REPL chat loop with manual recording
 
-Start a chat session with the LLM agent. Use `/record start` to toggle manual browser interaction — the visible Playwright window opens so you can click, type, and navigate directly. Type `/record stop` when done to save captured steps to the app model for later replay.
+Start a chat session with the LLM agent. Use `/record start` to toggle manual browser interaction — the visible Playwright window opens so you can click, type, and navigate directly.
 
 ```bash
 ultimatrix interact -t https://target.com
@@ -228,13 +232,15 @@ assess → [Pre-map Phase] → [Agent Phase] → [Report]
 ```
 
 - **Single-agent loop:** THREAT_MODEL_PROMPT drives explore→analyze→attack→re-analyze. No sub-agents. Agent reads/writes `app-model.json` via `read_app_model`/`update_app_model` tools.
-- **47 tools** total: browser (21), session/recording/trace (8), network (3), exploit (2), recon (5), knowledge (3), app-model (2), utility (3).
+- **45 tools** total: browser (19), network (3), exploit (2), recon (5), knowledge (3), app-model (2), session-pool (4), utility (6).
 - **11 LLM providers** via @langchain: OpenAI, Azure, Anthropic, Bedrock, Gemini, Groq, Together, Mistral, NIM, OpenRouter, Mock.
 - **BrowserSession:** Persistent Playwright sessions with `fill()` contenteditable/JS fallback, `pressKey()`, extraction, `addCookie()`, `hasSession()`, `saveStorageState()`/`loadStorageState()`, recording + replay + manual recording, network trace.
 - **AppModel type** (18 sections): workflow graph, recorded sessions, parameter classifications, auth boundaries, structured evidence, risk scoring, report compilation.
 - **Auto-report:** `compileReport()` generates HTML, JSON, or Markdown from app model findings — even if the LLM never calls `write_file`. Always written after agent completes.
 - **Dashboard:** Optional WebSocket + HTML server (`--dashboard` flag). Streams real-time tool calls, risk changes, status, and errors.
 - **Verification:** `verify` command re-runs findings against a fresh deployment, classifies each as fixed/regressed/unchanged/unknown.
+- **OAST server:** Local HTTP callback server for blind payload detection (XSS, SSRF, SQLi, XXE). Auto-starts before agent.
+- **Triage:** Rule-based evidence scoring (0-7), dedup, auto-severity calibration. Runs after agent finishes.
 
 ---
 
@@ -242,17 +248,18 @@ assess → [Pre-map Phase] → [Agent Phase] → [Report]
 
 ```
 src/
-├── cli/               — CLI commands (assess, scan, verify, interact, init)
-├── core/              — AppModel types, BrowserSessionManager, fix-todos middleware
+├── cli/               — CLI commands (assess, verify, interact, init) + REPL
+├── core/              — AppModel types, BrowserSessionManager, fix-todos, trace-utils
 ├── providers/         — 11 LLM provider factories
-├── tools/             — 47 tools + tool-registry
+├── tools/             — 45 tools + tool-registry
 ├── pipeline/          — AutonomousOrchestrator + THREAT_MODEL_PROMPT
-├── explorer/          — Pre-map phase (network-recorder, dom-observer, crawler, workflow-builder)
+├── explorer/          — Pre-map phase (spider, crawler, network-recorder, dom-observer, workflow-builder)
 ├── dashboard/         — WebSocket + HTML live dashboard
 ├── ingestion/         — OpenAPI/HAR/Postman/source-code parsers
 ├── verification/      — Re-run findings against new deployment
-├── flow/              — Trace-to-HAR converter
-└── agents/            — Agent registry
+├── prompts/           — THREAT_MODEL_PROMPT
+├── triage/            — Rule-based finding scoring and dedup
+└── oast/              — OAST callback server for blind payload detection
 ```
 
 ---
@@ -261,7 +268,7 @@ src/
 
 ```bash
 npx vitest run
-# 327 tests, 22 files, 0 failures
+# 297 tests, 20 files, 0 failures, 0 type errors, 0 build warnings
 npx tsc --noEmit       # 0 type errors
 npm run build           # 0 warnings
 ```

@@ -66,6 +66,38 @@ npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output \
 
 Open `http://localhost:3000` in a browser to see real-time events.
 
+### Dry-run validation
+
+Checks browser launch, target reachability, and OAST server without running the agent:
+
+```bash
+npx tsx src/cli/index.ts assess -t https://your-app.com --dry-run
+```
+
+### Interactive learning mode
+
+Crawl all routes, then record user workflows interactively. Generates site-map, HAR, and Playwright tests:
+
+```bash
+npx tsx src/cli/index.ts assess --learn -t https://your-app.com -o ./output
+```
+
+Phase 1 auto-crawls all routes. Phase 2 opens a REPL where you can:
+- Type actions like "go to /login" or "click Sign Up"
+- Use `/record start` for manual browser recording
+- Use `/record stop` to save captured steps
+- Use `/close` to finish and generate a Playwright test file
+
+### Advanced flags
+
+```bash
+# Limit tool calls (prevents runaway agents)
+--max-calls 100
+
+# Keep browser open after assessment
+--keep-browser
+```
+
 ### What happens
 
 **Phase 1 — Automated Exploration:**
@@ -96,15 +128,7 @@ output/
 │   └── visited-urls.json       — URLs visited during crawl
 ```
 
-## 3. Autonomous Scan (`scan`)
-
-Legacy entry point. Checks for existing `app-model.json` and passes it to the agent.
-
-```bash
-npx tsx src/cli/index.ts scan -t https://your-app.com -o ./output
-```
-
-## 4. Verify Findings (`verify`)
+## 3. Verify Findings (`verify`)
 
 Re-runs previous findings against a new deployment to check which vulnerabilities are fixed:
 
@@ -119,7 +143,7 @@ Output:
 - Each finding classified as `fixed`, `regressed`, `unchanged`, or `unknown`
 - Exit code 1 if any regressions found
 
-## 5. Interactive REPL (`interact`)
+## 4. Interactive REPL (`interact`)
 
 Live chat loop with the autonomous agent. Browser + all tools available:
 
@@ -138,13 +162,10 @@ When the agent encounters complex workflows (MFA, CAPTCHA, custom JS forms), use
 # Interact directly with the browser — clicks, fills, navigations are captured
 
 # Check recording status
-/record status
+/record
 
-# Stop recording — steps are saved; the agent is prompted to store them
+# Stop recording — steps are saved to app model
 /record stop
-
-# Stop and name the flow
-/record stop login-flow
 ```
 
 The captured steps are saved to the app model's `recordedSessions` section and can be replayed later with `browser_replay_macro`.
@@ -153,34 +174,12 @@ The captured steps are saved to the app model's `recordedSessions` section and c
 
 ```bash
 /quit    # Exit the REPL
-/record  # Toggle manual browser recording (see above)
+/help    # Show available commands
+/status  # Show recording status
+/save    # Save state explicitly
 ```
 
-## 6. Demo Mode
-
-```bash
-npx tsx src/cli/index.ts demo
-```
-
-Canned assessment with mock findings — no API key needed.
-
-## 7. Explore Tools & Providers
-
-```bash
-# List all registered tools
-npx tsx src/cli/index.ts tools
-
-# List tools by category
-npx tsx src/cli/index.ts tools -c browser
-
-# List available LLM providers
-npx tsx src/cli/index.ts providers
-
-# List agent roles
-npx tsx src/cli/index.ts agents
-```
-
-## 8. Build for Production
+## 5. Build for Production
 
 ```bash
 npm run build
@@ -188,7 +187,7 @@ npm run build
 #         dist/index.js, dist/cli/index.js (CJS)
 ```
 
-## 9. Run Tests
+## 6. Run Tests
 
 ```bash
 # All tests
@@ -201,7 +200,7 @@ npx tsc --noEmit
 npm run build
 ```
 
-**Current status:** 327 tests, 22 files, 0 failures, 0 type errors, 0 build warnings.
+**Current status:** 297 tests, 20 files, 0 failures, 0 type errors, 0 build warnings.
 
 ## Using Env Vars Only (No Config File)
 
@@ -222,17 +221,16 @@ Provider auto-detection order: `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `AN
 | `npx tsx src/cli/index.ts assess --skip-explore` | Skip pre-map phase |
 | `npx tsx src/cli/index.ts assess --depth 3` | Set crawl depth (default 2) |
 | `npx tsx src/cli/index.ts assess --dashboard` | Live WebSocket dashboard |
+| `npx tsx src/cli/index.ts assess --dry-run` | Validate config without running agent |
+| `npx tsx src/cli/index.ts assess --learn` | Interactive learning mode (crawl + record) |
+| `npx tsx src/cli/index.ts assess --max-calls 100` | Limit agent tool calls |
+| `npx tsx src/cli/index.ts assess --keep-browser` | Keep browser open after assessment |
 | `npx tsx src/cli/index.ts assess --with-openapi <path>` | Pre-populate from OpenAPI spec |
 | `npx tsx src/cli/index.ts assess --with-har <path>` | Pre-populate from HAR file |
 | `npx tsx src/cli/index.ts assess --with-postman <path>` | Pre-populate from Postman collection |
 | `npx tsx src/cli/index.ts assess --with-src <dir>` | Pre-populate from source code scan |
-| `npx tsx src/cli/index.ts scan -t <url>` | Autonomous pentest (legacy) |
 | `npx tsx src/cli/index.ts verify -a <json> -t <url>` | Verify findings against new deployment |
-| `npx tsx src/cli/index.ts interact -t <url>` | Live REPL chat loop. Type `/record start` for manual browser recording |
-| `npx tsx src/cli/index.ts demo` | Demo with mock findings |
-| `npx tsx src/cli/index.ts tools` | List security tools |
-| `npx tsx src/cli/index.ts providers` | List LLM providers |
-| `npx tsx src/cli/index.ts agents` | List agent roles |
-| `npx vitest run` | Run all 327 tests |
+| `npx tsx src/cli/index.ts interact -t <url>` | Live REPL chat loop |
+| `npx vitest run` | Run all 297 tests |
 | `npx tsc --noEmit` | Type check |
 | `npm run build` | Build dist/ with tsup |
