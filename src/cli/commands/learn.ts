@@ -10,7 +10,7 @@ import type { DynamicStructuredTool } from '@langchain/core/tools';
 
 const log = new Logger();
 
-export async function runLearn(target: string, outputDir: string, headless?: boolean, depth?: string, providerName?: string, modelId?: string) {
+export async function runInteractive(target: string, outputDir: string, headless?: boolean, depth?: string, providerName?: string, modelId?: string): Promise<void> {
   try {
   const outDir = path.resolve(outputDir);
   fs.mkdirSync(outDir, { recursive: true });
@@ -170,27 +170,14 @@ RULES:
         }).join('\n')}\n]\n\n`
       : '';
 
-    // ── /close — send to agent to write tests, then break ──
+    // ── Continuously feed recorded sessions into app model ──
+    if (currentSteps.length > 0) {
+      const { updateAppModelSection } = await import('../../core/app-model');
+      updateAppModelSection(appModelPath, 'recordedSessions', { 'user-flow': currentSteps }, true);
+    }
+
+    // ── /close — exit loop, save artifacts ──
     if (input === '/close' || input === '/quit') {
-      const closeMsg = `${contextPrefix}The session is ending. Read recordedSessions from the app model. For each named session (each key in recordedSessions), write a separate Playwright test file named "{key}.spec.ts" to ${outDir} covering that flow. Read techStack for framework context. Skip sessions named "spider-auto" or that only contain navigations — they aren't meaningful test flows. Then summarize what was achieved.`;
-      try {
-        const stream = await agent.stream(
-          { messages: [{ role: 'user', content: closeMsg }] },
-          { streamMode: 'messages', subgraphs: true },
-        );
-        for await (const [, chunk] of stream) {
-          const msg = chunk?.[0];
-          if (!msg) continue;
-          if (msg.text) process.stdout.write(msg.text);
-          if ((msg as any)._getType?.() === 'tool') {
-            const result = msg.content;
-            const s = typeof result === 'string' ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200);
-            if (s?.trim()) process.stdout.write('\n' + chalk.dim(`  [${s.replace(/\n/g, ' ').trim()}]\n`));
-          }
-        }
-      } catch (err: any) {
-        log.error(`Agent error during close: ${err?.message || err}`);
-      }
       break;
     }
 
@@ -266,7 +253,7 @@ RULES:
     } else {
       log.error(msg.split('\n')[0]);
     }
-    process.exit(1);
+    throw err;
   }
 }
 

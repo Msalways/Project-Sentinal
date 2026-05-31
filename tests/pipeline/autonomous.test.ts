@@ -6,22 +6,14 @@ describe('AutonomousOrchestrator', () => {
     expect(mod.AutonomousOrchestrator).toBeDefined();
   });
 
-  it('should export THREAT_MODEL_PROMPT with explore/analyze/attack guidance', async () => {
-    const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.THREAT_MODEL_PROMPT).toBeDefined();
-    expect(typeof mod.THREAT_MODEL_PROMPT).toBe('string');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('EXPLORE');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('ANALYZE');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('ATTACK');
-  });
-
-  it('THREAT_MODEL_PROMPT should include app model tools guidance', async () => {
-    const mod = await import('../../src/pipeline/autonomous');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('{appModelPath}');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('read_app_model');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('update_app_model');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('endpoints');
-    expect(mod.THREAT_MODEL_PROMPT).toContain('findings');
+  it('STRATEGIST_PROMPT should guide strategist behavior', async () => {
+    const mod = await import('../../src/prompts/threat-model');
+    expect(mod.STRATEGIST_PROMPT).toBeDefined();
+    expect(typeof mod.STRATEGIST_PROMPT).toBe('string');
+    expect(mod.STRATEGIST_PROMPT).toContain('security strategist');
+    expect(mod.STRATEGIST_PROMPT).toContain('spawn_worker');
+    expect(mod.STRATEGIST_PROMPT).toContain('techniques');
+    expect(mod.STRATEGIST_PROMPT).toContain('FIRE-AND-FORGET');
   });
 
   it('AutonomousOrchestrator should construct with model, target, outputDir', async () => {

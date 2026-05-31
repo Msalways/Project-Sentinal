@@ -8,7 +8,7 @@ import { toolRegistry } from '../tools/tool-registry';
 import { readAppModel, writeAppModel, type AppModel } from '../core/app-model';
 import type { LLMProviderName, ScanTarget } from '../core/types';
 import yaml from 'js-yaml';
-import { Logger } from './logger';
+import { Logger, colors } from './logger';
 
 const log = new Logger();
 
@@ -71,11 +71,10 @@ program
   .command('assess')
   .description('Security assessment — agent explores, records, and tests the target')
   .option('-t, --target <url>', 'Target URL')
-  .option('-o, --output <dir>', 'Output directory', './output')
+  .option('-o, --output <dir>', 'Output directory')
   .option('--headless', 'Run browser in headless mode (visible by default)')
   .option('--provider <provider>', 'LLM provider (or set env var like OPENAI_API_KEY)')
   .option('--model <model>', 'Model ID')
-  .option('--learn', 'Interactive mode: crawl, record user flows, generate Playwright tests')
   .option('--dry-run', 'Validate config and target, then exit')
   .option('--dashboard', 'Start live WebSocket dashboard')
   .addOption(new Option('--depth <n>', 'Crawl depth').default('2').hideHelp())
@@ -83,25 +82,36 @@ program
   .addOption(new Option('--with-har <path>', 'Pre-populate from HAR file').hideHelp())
   .addOption(new Option('--with-postman <path>', 'Pre-populate from Postman collection').hideHelp())
   .addOption(new Option('--with-src <path>', 'Pre-populate from source code').hideHelp())
-  .addOption(new Option('--skip-explore', 'Skip exploration phase').hideHelp())
   .addOption(new Option('--max-calls <n>', 'Tool call limit').default('50').hideHelp())
   .addOption(new Option('--keep-browser', 'Keep browser open').hideHelp())
+  .addOption(new Option('--fresh', 'Delete previous output and re-crawl from scratch').hideHelp())
   .action(async (opts) => {
-    if (!opts.target) { log.error('No target specified. Use -t <url>'); process.exit(1); }
+    const config = await loadRuntimeConfig({ ...opts });
+
+    const target = (opts.target || config.scan?.target || '').replace(/\/$/, '');
+    if (!target) { log.error('No target specified. Use -t <url> or set scan.target in ultimatrix.yaml'); process.exit(1); }
+
+    const outDir = path.resolve(opts.output || config.output?.dir || './output');
+    if (opts.fresh && fs.existsSync(outDir)) {
+      fs.rmSync(outDir, { recursive: true, force: true });
+      log.dim('Cleaned output directory (--fresh)');
+    }
+    fs.mkdirSync(outDir, { recursive: true });
+    const appModelPath = path.join(outDir, 'app-model.json');
+    const { setAppModelPath } = await import('../core/app-model-path');
+    setAppModelPath(appModelPath);
 
     if (opts.dryRun) {
       log.header('Dry Run', 'Validating configuration');
-      log.info(`Target: ${opts.target}`);
-      log.info(`Output: ${opts.output}`);
-      log.info(`Provider: ${opts.provider || 'auto'}`);
-      log.info(`Model: ${opts.model || 'default'}`);
+      log.info(`Target: ${target}`);
+      log.info(`Output: ${outDir}`);
       try {
         const mgr = (await import('../tools/browser-tools')).getSharedBrowserManager(!opts.headless);
         await mgr.getOrCreate('default');
         log.success('Browser: OK');
         const page = await mgr.getOrCreate('default');
-        await page.goto(opts.target.replace(/\/$/, ''), { timeout: 10000 });
-        log.success(`Target reachable: ${opts.target}`);
+        await page.goto(target, { timeout: 10000 });
+        log.success(`Target reachable: ${target}`);
         await mgr.closeAll();
       } catch (e) {
         log.warn(`Target check: ${e instanceof Error ? e.message : String(e)}`);
@@ -116,23 +126,9 @@ program
       process.exit(0);
     }
 
-    if (opts.learn) {
-      const { runLearn } = await import('./commands/learn');
-      await runLearn(opts.target, opts.output, opts.headless, opts.depth, opts.provider, opts.model);
-      process.exit(0);
-    }
-
-    const outDir = path.resolve(opts.output);
-    fs.mkdirSync(outDir, { recursive: true });
-    const target = opts.target.replace(/\/$/, '');
-    const appModelPath = path.join(outDir, 'app-model.json');
-    const { setAppModelPath } = await import('../core/app-model-path');
-    setAppModelPath(appModelPath);
-
     // ── Ingest artifacts if provided ──
-    const hasArtifacts = opts.withOpenapi || opts.withHar || opts.withPostman || opts.withSrc;
     let initialModel: Partial<import('../core/app-model').AppModel> = {};
-    if (hasArtifacts) {
+    if (opts.withOpenapi || opts.withHar || opts.withPostman || opts.withSrc) {
       log.header('Ingesting artifacts', target);
       const { ingestAll } = await import('../ingestion');
       initialModel = ingestAll({
@@ -141,124 +137,115 @@ program
         postman: opts.withPostman,
         sourceDir: opts.withSrc,
       }, target);
-      log.info(`Ingested: ${initialModel.endpoints?.length || 0} endpoints, ${Object.keys(initialModel.cookies || {}).length} cookies, ${initialModel.techStack?.length || 0} tech stack items`);
+      log.info(`Ingested: ${initialModel.endpoints?.length || 0} endpoints`);
     }
 
-    // ── Create initial app model ──
-    const { DEFAULT_MODEL } = await import('../core/app-model');
-    const model: AppModel = {
-      ...DEFAULT_MODEL,
-      target,
-      techStack: initialModel.techStack || [],
-      auth: { type: 'unknown' as const, loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
-      workflow: { nodes: [], edges: [] },
-      endpoints: initialModel.endpoints || [],
-      forms: initialModel.forms || [],
-      scripts: [],
-      cookies: initialModel.cookies || {},
-      localStorage: {},
-      findings: [],
-      verifications: [],
-      parameterClassifications: [],
-      authBoundaries: [],
-      recordedSessions: {},
-      hypotheses: initialModel.hypotheses || [],
-      nextSteps: initialModel.nextSteps || ['Navigate to target', 'Build workflow graph', 'Record login flows', 'Probe auth boundaries', 'Classify parameters', 'Test hypotheses'],
-      visitedUrls: initialModel.visitedUrls || [],
-      oastCallbacks: [],
-      coverage: [],
-    };
-    writeAppModel(appModelPath, model);
-    log.info(`App model initialized: ${appModelPath}`);
+    // ── Create initial app model if artifacts provided ──
+    if (Object.keys(initialModel).length > 0) {
+      const { DEFAULT_MODEL } = await import('../core/app-model');
+      const model: AppModel = {
+        ...DEFAULT_MODEL,
+        target,
+        techStack: initialModel.techStack || [],
+        auth: { type: 'unknown' as const, loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
+        workflow: { nodes: [], edges: [] },
+        endpoints: initialModel.endpoints || [],
+        forms: initialModel.forms || [],
+        scripts: [],
+        cookies: initialModel.cookies || {},
+        localStorage: {},
+        findings: [],
+        verifications: [],
+        parameterClassifications: [],
+        authBoundaries: [],
+        recordedSessions: {},
+        hypotheses: initialModel.hypotheses || [],
+        nextSteps: initialModel.nextSteps || [],
+        visitedUrls: initialModel.visitedUrls || [],
+        oastCallbacks: [],
+        coverage: [],
+      };
+      writeAppModel(appModelPath, model);
+    }
 
     // ── Start dashboard if requested ──
     let dashboard: import('../dashboard/server').DashboardServer | undefined;
     let stopDashboard: (() => void) | undefined;
     if (opts.dashboard) {
       const { startDashboard } = await import('../dashboard/server');
-      const dashboardPort = parseInt(opts.dashboardPort, 10) || 3000;
-      const server = startDashboard(dashboardPort);
+      const server = startDashboard(3000);
       dashboard = server;
       stopDashboard = server.close;
       log.info(`Dashboard: http://localhost:${server.port}`);
     }
 
-    // ── Automated exploration phase ──
-    const crawlDepth = parseInt(opts.depth, 10) || 0;
-    if (!opts.skipExplore && crawlDepth > 0) {
-      log.header('Exploration Phase', 'Auto-mapping workflow graph');
-      const { getSharedBrowserManager } = await import('../tools/browser-tools');
-      const mgr = getSharedBrowserManager(opts.headless);
-      const { runExploration } = await import('../explorer');
-      const explored = await runExploration({
-        target,
-        browserManager: mgr,
-        outputDir: outDir,
-        maxDepth: crawlDepth,
-        maxPages: 30,
-        onProgress: (msg: string) => log.dim(`  ${msg}`),
-      });
-      // Merge exploration data into app model
-      const appModel = readAppModel(appModelPath);
-      appModel.workflow = { nodes: explored.workflow.nodes, edges: explored.workflow.edges };
-      appModel.endpoints = [...(appModel.endpoints || []), ...explored.endpoints];
-      appModel.forms = [...(appModel.forms || []), ...explored.forms];
-      appModel.authBoundaries = [...(appModel.authBoundaries || []), ...explored.authBoundaries];
-      appModel.visitedUrls = [...(appModel.visitedUrls || []), ...explored.visitedUrls];
-      appModel.parameterClassifications = [...(appModel.parameterClassifications || []), ...explored.parameterClassifications];
-      if (explored.techStack.length > 0) appModel.techStack = [...new Set([...appModel.techStack, ...explored.techStack])];
-      if (explored.auth.loginEndpoint && !appModel.auth.loginEndpoint) appModel.auth.loginEndpoint = explored.auth.loginEndpoint;
-      if (explored.hypotheses.length > 0) appModel.hypotheses = [...new Set([...appModel.hypotheses, ...explored.hypotheses])];
-      writeAppModel(appModelPath, appModel);
-      log.success(`Workflow graph: ${explored.workflow.nodes.length} nodes, ${explored.workflow.edges.length} edges, ${explored.endpoints.length} endpoints`);
-
-      // Private app detection
-      const { formatAppModelContext } = await import('../core/app-model');
-      const ctx = formatAppModelContext(readAppModel(appModelPath));
-      if (ctx.isPrivateApp) {
-        log.warn(`Private app detected — ${ctx.privateAppReason}`);
-        log.info('');
-        log.info('Options:');
-        log.dim('  1. Continue anyway — agent will try to discover routes and handle auth');
-        log.dim('  2. Run interactively instead: ultimatrix interact -t <url>');
-        log.dim('     Then use /record to record a login session');
-        log.dim('  3. Upload app specs:');
-        log.dim('     ultimatrix assess -t <url> --with-openapi ./spec.yaml');
-        log.dim('     ultimatrix assess -t <url> --with-har ./session.har');
-        log.dim('     ultimatrix assess -t <url> --with-postman ./collection.json');
-        log.info('');
-        const { confirm } = await import('@inquirer/prompts');
-        const proceed = await confirm({ message: 'Continue assessment anyway?', default: true });
-        if (!proceed) {
-          log.info('Stopping. Re-run with --with-openapi, --with-har, or use `ultimatrix interact` for manual flow.');
-          process.exit(0);
-        }
-      }
-    }
-
-    // ── Launch agent ──
-    log.header('Assessment', `${target}`);
-    if (opts.skipExplore || crawlDepth === 0) {
-      log.info('LLM-driven mode: agent navigates, explores, and attacks autonomously');
-    } else {
-      log.info('LLM-driven mode: agent starts with pre-mapped workflow graph and attacks known endpoints');
-    }
-
-    const config = await loadRuntimeConfig({ ...opts });
+    // ── Launch orchestrator (spider + strategist + auto-report) with concurrent REPL ──
+    log.header('Assessment', target);
     const chatModel = await loadModel(config);
     const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
+
+    const ac = new AbortController();
     const orchestrator = new AutonomousOrchestrator({
       model: chatModel,
       target: { url: target } as ScanTarget,
       outputDir: outDir,
-      format: opts.format || 'html',
+      format: config.output?.format || 'html',
       appModelPath,
       dashboard,
       maxToolCalls: opts.maxCalls ? parseInt(opts.maxCalls, 10) : undefined,
       keepBrowser: opts.keepBrowser || undefined,
+      abortSignal: ac.signal,
+    });
+
+    const readline = await import('readline');
+    const rli = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    if (process.stdin.isTTY) {
+      process.stdout.write(colors.dim('Interactive mode: type a message, or /status  /findings  /close\n'));
+    }
+
+    let replRunning = true;
+    rli.on('line', (line: string) => {
+      if (!replRunning) return;
+      const trimmed = line.trim();
+      const lower = trimmed.toLowerCase();
+
+      if (lower === '/close' || lower === '/exit') {
+        log.warn('User requested early stop...');
+        ac.abort();
+        replRunning = false;
+        rli.close();
+      } else if (lower === '/status' || lower === '/s') {
+        try {
+          const model = JSON.parse(fs.readFileSync(appModelPath, 'utf-8'));
+          const hCount = model.hypotheses?.length ?? 0;
+          const fCount = model.findings?.length ?? 0;
+          const vUrls = model.visitedUrls?.length ?? 0;
+          const calls = model.oastCallbacks?.length ?? 0;
+          log.info(`Progress: ${vUrls} pages, ${hCount} hypotheses, ${fCount} findings, ${calls} OAST callbacks`);
+        } catch {
+          log.info('App model not yet available (spider still crawling)');
+        }
+      } else if (lower === '/findings' || lower === '/f') {
+        try {
+          const model = JSON.parse(fs.readFileSync(appModelPath, 'utf-8'));
+          if (!model.findings?.length) { log.info('No findings yet'); }
+          for (const f of model.findings || []) {
+            const sev = f.severity ?? 'info';
+            const label = sev === 'critical' ? colors.error : sev === 'high' ? colors.warn : colors.dim;
+            process.stdout.write(label(`  ${f.type}: ${f.description || f.title || 'n/a'} (${sev})\n`));
+          }
+        } catch {
+          log.info('App model not yet available');
+        }
+      } else if (trimmed && !lower.startsWith('/')) {
+        orchestrator.sendUserMessage(trimmed);
+      }
     });
 
     const result = await orchestrator.run();
+    replRunning = false;
+    try { rli.close(); } catch { /* already closed */ }
 
     if (stopDashboard) stopDashboard();
 
@@ -267,12 +254,11 @@ program
     } else {
       log.warn('Assessment finished but no report file was generated.');
     }
-
     log.divider();
     log.header('Output', `Artifacts in ${outDir}`);
     log.dim(`  app-model.json — session knowledge graph`);
-    log.dim(`  final-security-report.${opts.format || 'html'} — assessment results`);
-
+    log.dim(`  final-security-report.${config.output?.format || 'html'} — assessment results`);
+    log.dim(`  playwright/ — auto-generated Playwright test suite`);
     await new Promise((r) => setTimeout(r, 500));
     process.exit(0);
   });
@@ -567,6 +553,9 @@ async function loadModel(config: any) {
       `Set ${providerEnvVar(providerName)} env var or run "ultimatrix init".`
     );
   }
+
+  const { setLlmConfig } = await import('../core/app-model-path');
+  setLlmConfig({ provider: providerName, apiKey, model: modelId });
 
   return providerRegistry.create(providerName as LLMProviderName, {
     apiKey,
