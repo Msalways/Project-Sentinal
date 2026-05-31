@@ -2,15 +2,15 @@ import { OastServer } from './server';
 
 let instance: OastServer | null = null;
 
-export function getOastServer(): OastServer {
+export function getOastServer(persistencePath?: string, publicUrlTemplate?: string): OastServer {
   if (!instance) {
-    instance = new OastServer();
+    instance = new OastServer(0, persistencePath, publicUrlTemplate);
   }
   return instance;
 }
 
-export async function ensureOastRunning(): Promise<number> {
-  const srv = getOastServer();
+export async function ensureOastRunning(persistencePath?: string, publicUrlTemplate?: string): Promise<number> {
+  const srv = getOastServer(persistencePath, publicUrlTemplate);
   if (!srv.isRunning()) {
     return await srv.start();
   }

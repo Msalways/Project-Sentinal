@@ -343,22 +343,27 @@ export class BrowserSessionManager {
     return this.getRecording(sessionId);
   }
 
-  async navigate(sessionId: string, url: string): Promise<string> {
+  async navigate(sessionId: string, url: string, opts?: { relaxed?: boolean }): Promise<string> {
     const page = await this.getOrCreate(sessionId);
     if (!this.headless) page.bringToFront().catch(() => {});
-    try {
-      await page.goto(url, { waitUntil: 'load', timeout: 30000 });
-    } catch {
-      // SPA fallback — 'load' timeout (WebSockets, long-polling). Try domcontentloaded.
+    let firstError: Error | null = null;
+    for (const waitUntil of ['load', 'domcontentloaded'] as const) {
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      } catch {
-        // Give up — page may be behind auth wall or blocked
-        await page.goto(url, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+        await page.goto(url, { waitUntil, timeout: 30000 });
+        const finalUrl = page.url();
+        if (finalUrl && finalUrl !== 'about:blank') {
+          this.record(sessionId, { type: 'navigate', url });
+          return finalUrl;
+        }
+        if (opts?.relaxed) return finalUrl;
+      } catch (e) {
+        if (!firstError) firstError = e instanceof Error ? e : new Error(String(e));
       }
     }
-    this.record(sessionId, { type: 'navigate', url });
-    return page.url();
+    throw new Error(
+      `Failed to navigate to ${url}: final URL was "${await page.url()}". ` +
+      (firstError ? `First error: ${firstError.message}` : 'No error thrown (page loaded but returned about:blank — likely bot detection)'),
+    );
   }
 
   async click(sessionId: string, selector: string): Promise<string> {

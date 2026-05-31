@@ -150,10 +150,11 @@ export interface AppModel {
   parameterClassifications: ParameterClass[];
   authBoundaries: AuthBoundary[];
   recordedSessions: Record<string, MacroStep[]>;
-  hypotheses: string[];
+  hypotheses: Record<string, unknown>[];
   nextSteps: string[];
   visitedUrls: string[];
   oastCallbacks: Array<{ uuid: string; url: string; timestamp: number; method: string }>;
+  workerActions: WorkerAction[];
   coverage: Array<{
     endpoint: string;
     method: string;
@@ -208,6 +209,7 @@ export const DEFAULT_MODEL: AppModel = {
   nextSteps: ['Navigate to target', 'Build workflow graph', 'Discover auth boundaries', 'Classify parameters', 'Probe for vulnerabilities'],
   visitedUrls: [],
   oastCallbacks: [],
+  workerActions: [],
   coverage: [],
   currentPage: { url: '', title: '', lastUpdatedAt: 0, snapshotHash: '' },
   warnings: [],
@@ -218,6 +220,24 @@ export const DEFAULT_MODEL: AppModel = {
   errors: [],
   _meta: { startedAt: 0, duration: 0, totalToolCalls: 0, lastUpdatedAt: 0, agentVersion: '' },
 };
+
+export interface WorkerAction {
+  hypothesisId: string;
+  technique: string;
+  attempt: number;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string | undefined;
+  payload: string;
+  status: number;
+  responseBodySnippet: string;
+  timingMs: number;
+  vulnerable: boolean;
+  evidence: string[];
+  analysis: string;
+  timestamp: number;
+}
 
 export function readAppModel(modelPath: string): AppModel {
   try {
@@ -271,6 +291,25 @@ export function calculateOverallRisk(model: AppModel): { score: number; level: s
 }
 
 // ── Workflow Graph Rendering ──
+
+export function renderMermaidGraph(model: AppModel): string {
+  const { nodes, edges } = model.workflow;
+  if (nodes.length === 0) return '';
+  const lines: string[] = ['graph TD;'];
+  for (const node of nodes) {
+    const safeId = node.id.replace(/[^a-zA-Z0-9]/g, '_');
+    const label = (node.title || node.url || node.id).replace(/"/g, '\\"');
+    const style = node.authRequired ? ':::.auth' : node.type === 'login' ? ':::.login' : '';
+    lines.push(`  ${safeId}["${label}"]${style}`);
+  }
+  for (const edge of edges) {
+    const from = edge.fromId.replace(/[^a-zA-Z0-9]/g, '_');
+    const to = edge.toId.replace(/[^a-zA-Z0-9]/g, '_');
+    const label = (edge.label || edge.trigger).replace(/"/g, '\\"');
+    lines.push(`  ${from} -->|"${label}"| ${to};`);
+  }
+  return lines.join('\n');
+}
 
 export function renderWorkflowGraph(model: AppModel): string {
   const { nodes, edges } = model.workflow;
@@ -344,9 +383,19 @@ export function compileReport(model: AppModel, format: 'html' | 'json' | 'markdo
         <td>${f.confidence}</td>
         <td>${f.evidence.map(e => e.label).join('; ')}</td>
       </tr>`).join('\n');
+    const mermaidGraph = renderMermaidGraph(model);
+    const graphSection = mermaidGraph
+      ? `<h2>Workflow Graph</h2>
+<div class="mermaid">${mermaidGraph}</div>
+<p>${model.workflow.nodes.length} nodes, ${model.workflow.edges.length} edges</p>`
+      : '';
     return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Security Report — ${model.target}</title>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a2e; background: #f8f9fa; }
   h1 { color: #16213e; border-bottom: 3px solid #e94560; padding-bottom: .5rem; }
@@ -369,6 +418,7 @@ export function compileReport(model: AppModel, format: 'html' | 'json' | 'markdo
   .card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); text-align: center; }
   .card .num { font-size: 2rem; font-weight: 700; color: #16213e; }
   .card .label { font-size: .8rem; color: #6c757d; }
+  .mermaid { background: #fff; border-radius: 8px; padding: 1rem; margin: 1rem 0; overflow-x: auto; }
 </style></head><body>
 <h1>Security Assessment Report</h1>
 <p><strong>Target:</strong> ${model.target}</p>
@@ -393,8 +443,7 @@ export function compileReport(model: AppModel, format: 'html' | 'json' | 'markdo
 ${model.findings.length === 0 ? '<p>No findings recorded.</p>' : `<table><thead><tr><th>Type</th><th>Endpoint</th><th>Severity</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>${findingRows}</tbody></table>`}
 <h2>Tech Stack</h2>
 <p>${model.techStack.length > 0 ? model.techStack.join(', ') : 'Not detected'}</p>
-<h2>Workflow Graph</h2>
-<pre>${renderWorkflowGraph(model)}</pre>
+${graphSection}
 </body></html>`;
   }
 

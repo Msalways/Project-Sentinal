@@ -234,6 +234,7 @@ providerRegistry.register({
       model: config.modelId || 'meta/llama-3.1-70b-instruct',
       temperature: config.temperature ?? 0.3,
       maxTokens: config.maxTokens ?? 4096,
+      modelKwargs: { parallel_tool_calls: false },
       configuration: {
         baseURL: config.baseURL || 'https://integrate.api.nvidia.com/v1',
       },
