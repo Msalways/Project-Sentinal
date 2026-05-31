@@ -4,133 +4,91 @@
 
 ```bash
 node >= 20
-npm
-```
-
-```bash
-cd ultimatrix
 npm install
+# Plus Playwright browser:
+npx playwright install chromium
 ```
 
-## 1. Interactive Setup
+## Quick Start
 
 ```bash
-npx tsx src/cli/index.ts init
-```
+# Set your API key
+export OPENAI_API_KEY=sk-...
 
-Prompts for:
-- LLM provider (openai, anthropic, bedrock, gemini, groq, together, mistral, nvidia, openrouter)
-- API key
-- Model ID
-- Default target URL (optional)
-- Output directory
-
-Writes `ultimatrix.yaml` in the current directory and `~/.config/ultimatrix/providers.yaml` for secrets.
-
-## 2. Run Full Assessment (`assess`)
-
-Primary entry point. Two-phase operation: automated exploration builds the workflow graph, then the LLM attacks known endpoints.
-
-### Basic usage
-
-```bash
+# Full assessment — one command
 npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output
 ```
 
-### With automated exploration depth
+## `assess` — Full Assessment
+
+Primary command. Spider crawls the target, then the strategist fires parallel worker threads to test every parameterized endpoint.
 
 ```bash
-# Depth 2 is default. Higher depth = more pages discovered
-npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output --depth 3
+# Basic
+npx tsx src/cli/index.ts assess -t https://target.com -o ./output
 
-# Skip exploration entirely (fast re-scans against known targets)
-npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output --skip-explore
-```
+# Fast scan (depth 1, no crawl of sub-pages)
+npx tsx src/cli/index.ts assess -t https://target.com -o ./output --depth 1
 
-### With pre-existing artifacts
+# Re-scan existing app model (skip spider crawl)
+npx tsx src/cli/index.ts assess -t https://target.com -o ./output --skip-explore
 
-```bash
-npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output \
+# Fresh start (delete previous output)
+npx tsx src/cli/index.ts assess -t https://target.com -o ./output --fresh
+
+# Live WebSocket dashboard
+npx tsx src/cli/index.ts assess -t https://target.com -o ./output --dashboard
+
+# Pre-populate from external artifacts
+npx tsx src/cli/index.ts assess -t https://target.com -o ./output \
   --with-openapi ./api-spec.yaml \
   --with-har ./session.har \
   --with-postman ./collection.json \
   --with-src ./src
+
+# Validate setup without running the agent
+npx tsx src/cli/index.ts assess -t https://target.com --dry-run
+
+# Limit tool calls per turn (prevents runaway loops)
+npx tsx src/cli/index.ts assess -t https://target.com --max-calls 100
+
+# Keep browser open after assessment (for debugging)
+npx tsx src/cli/index.ts assess -t https://target.com --keep-browser
 ```
 
-### With live dashboard
+### What happens during `assess`
 
-```bash
-npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output \
-  --dashboard --dashboard-port 3000
-```
+1. **OAST server starts** — Local HTTP callback server for blind SSRF/XXE/open-redirect detection. Runs on a random port, persists callbacks to `output/oast-callbacks.json`.
 
-Open `http://localhost:3000` in a browser to see real-time events.
+2. **Spider crawl** — Playwright browser navigates the target, discovers routes via BFS, extracts forms/cookies/scripts/storage per page. Explores forms (fills & submits with contextual values), clicks interactive elements (buttons, toggles, tabs), dismisses overlays (cookie banners, modals), discovers SPA hash routes (`<a href="#/path">`), and attempts auth flows (detects login forms, fills if credentials configured).
 
-### Dry-run validation
+3. **Strategist loop** — Single LLM reads the app model and fires fire-and-forget workers in batches (3-5 per turn). Workers run in background and write findings to `app-model.json` asynchronously. The strategist periodically checks for new findings and stops when all parameterized endpoints are covered.
 
-Checks browser launch, target reachability, and OAST server without running the agent:
+4. **Worker detection** — Each worker is a lightweight LLM agent that:
+   - Generates a payload via LLM (no canned lists)
+   - Sends the HTTP request
+   - Analyzes the raw response for 8 evidence types: SQL errors, stack traces, file contents, template output, command output, reflection, status anomalies, redirect anomalies
+   - For SSRF/XXE/open-redirect: auto-embeds OAST UUID and checks for callbacks
+   - For stored XSS: follows up POST with GET to the action URL
+   - For blind SQLi: compares timing against a baseline request
 
-```bash
-npx tsx src/cli/index.ts assess -t https://your-app.com --dry-run
-```
+5. **Report generation** — Every 3 turns, a partial Playwright test is generated. After the strategist finishes, the final report with Mermaid graphs is compiled. The Playwright test contains two parts: User Flow (narrative replay with password masking, form grouping) and Assessment Flow (Route Discovery tests + Attack Replay regression suite + Clean Endpoint tests).
 
-### Interactive learning mode
-
-Crawl all routes, then record user workflows interactively. Generates site-map, HAR, and Playwright tests:
-
-```bash
-npx tsx src/cli/index.ts assess --learn -t https://your-app.com -o ./output
-```
-
-Phase 1 auto-crawls all routes. Phase 2 opens a REPL where you can:
-- Type actions like "go to /login" or "click Sign Up"
-- Use `/record start` for manual browser recording
-- Use `/record stop` to save captured steps
-- Use `/close` to finish and generate a Playwright test file
-
-### Advanced flags
-
-```bash
-# Limit tool calls (prevents runaway agents)
---max-calls 100
-
-# Keep browser open after assessment
---keep-browser
-```
-
-### What happens
-
-**Phase 1 — Automated Exploration:**
-1. Playwright browser opens and navigates to the target
-2. All HTTP traffic is intercepted via `page.route()` — captures URLs, methods, status, headers, bodies
-3. BFS crawler visits pages, clicks links, fills forms with context-aware test data
-4. DOM snapshots are taken before/after every interaction — hashes compared to detect state changes
-5. Network requests are correlated with DOM transitions to build the workflow graph
-6. Results saved to `./output/explorer/` (nodes, edges, endpoints, auth boundaries, visited URLs)
-
-**Phase 2 — LLM Attack:**
-1. Agent reads the pre-populated app model with workflow graph, endpoints, forms, auth boundaries
-2. Agent probes auth boundaries, classifies parameters, crafts payloads based on parameter types
-3. All findings saved to `app-model.json` with structured evidence
-4. Auto-report compiled to `final-security-report.{html|json|md}`
-
-### Output structure
+### Output
 
 ```
 output/
-├── app-model.json              — 18-section knowledge graph
-├── final-security-report.html  — Assessment report
-├── explorer/
-│   ├── nodes.json              — Workflow nodes discovered
-│   ├── edges.json              — Workflow edges (transitions)
-│   ├── endpoints.json          — API endpoints discovered
-│   ├── auth-boundaries.json    — Auth-required URLs
-│   └── visited-urls.json       — URLs visited during crawl
+├── app-model.json              — Complete assessment state (findings, hypotheses, etc.)
+├── final-security-report.md    — Markdown report with risk score and Mermaid graphs
+├── playwright/
+│   └── assess-flow.spec.ts     — Auto-generated Playwright test suite (regenerates every 3 turns)
+├── session-trace.har           — Browser trace for replay
+└── oast-callbacks.json         — OAST callback records
 ```
 
-## 3. Verify Findings (`verify`)
+## `verify` — Re-run Findings
 
-Re-runs previous findings against a new deployment to check which vulnerabilities are fixed:
+Check if previously found vulnerabilities are fixed in a new deployment:
 
 ```bash
 npx tsx src/cli/index.ts verify \
@@ -139,98 +97,90 @@ npx tsx src/cli/index.ts verify \
   -o ./verify-output
 ```
 
-Output:
-- Each finding classified as `fixed`, `regressed`, `unchanged`, or `unknown`
-- Exit code 1 if any regressions found
+Each finding is classified as `fixed`, `regressed`, `unchanged`, or `unknown`. Exit code 1 if any regressions.
 
-## 4. Interactive REPL (`interact`)
+## `interact` — REPL Chat Loop
 
-Live chat loop with the autonomous agent. Browser + all tools available:
+Live chat with the autonomous agent. All 45 tools available + browser:
 
 ```bash
-npx tsx src/cli/index.ts interact -t https://your-app.com
+npx tsx src/cli/index.ts interact -t https://target.com
 ```
 
-### Manual Recording in REPL
+REPL commands:
+- `/close` or `/exit` — End session and generate Playwright test
+- `/help` — Show available commands
+- `/record start` — Begin manual browser recording
+- `/record stop` — Save recorded steps to app model
 
-When the agent encounters complex workflows (MFA, CAPTCHA, custom JS forms), use the `/record` command:
+## `init` — Setup Wizard
 
 ```bash
-# Start manual recording — opens visible Playwright browser
-/record start
-
-# Interact directly with the browser — clicks, fills, navigations are captured
-
-# Check recording status
-/record
-
-# Stop recording — steps are saved to app model
-/record stop
+npx tsx src/cli/index.ts init
 ```
 
-The captured steps are saved to the app model's `recordedSessions` section and can be replayed later with `browser_replay_macro`.
+Prompts for provider, API key, model, default target. Writes `ultimatrix.yaml` and `~/.config/ultimatrix/providers.yaml`.
 
-### Other REPL commands
+## Configuration
 
-```bash
-/quit    # Exit the REPL
-/help    # Show available commands
-/status  # Show recording status
-/save    # Save state explicitly
-```
-
-## 5. Build for Production
-
-```bash
-npm run build
-# Output: dist/index.mjs, dist/cli/index.mjs (ESM)
-#         dist/index.js, dist/cli/index.js (CJS)
-```
-
-## 6. Run Tests
-
-```bash
-# All tests
-npx vitest run
-
-# Type check
-npx tsc --noEmit
-
-# Build
-npm run build
-```
-
-**Current status:** 297 tests, 20 files, 0 failures, 0 type errors, 0 build warnings.
-
-## Using Env Vars Only (No Config File)
+### Environment Variables
 
 ```bash
 export OPENAI_API_KEY=sk-...
-npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output
+# Or any supported provider:
+export ANTHROPIC_API_KEY=sk-...
+export OPENROUTER_API_KEY=...
+export GROQ_API_KEY=...
+export GEMINI_API_KEY=...
+export AZURE_OPENAI_API_KEY=...
 ```
 
-Provider auto-detection order: `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `ANTHROPIC_API_KEY` → `AZURE_OPENAI_API_KEY` → `GROQ_API_KEY` → `GEMINI_API_KEY` → `AWS_ACCESS_KEY_ID`
+Provider auto-detection: `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `ANTHROPIC_API_KEY` → `AZURE_OPENAI_API_KEY` → `GROQ_API_KEY` → `GEMINI_API_KEY` → `AWS_ACCESS_KEY_ID`
 
-## Quick Reference
+### Provider Config File
 
-| Command | Description |
-|---------|-------------|
-| `npx tsx src/cli/index.ts` | Gate check → REPL |
-| `npx tsx src/cli/index.ts init` | Interactive setup wizard |
-| `npx tsx src/cli/index.ts assess -t <url> -o ./out` | Full assessment (explore + attack) |
-| `npx tsx src/cli/index.ts assess --skip-explore` | Skip pre-map phase |
-| `npx tsx src/cli/index.ts assess --depth 3` | Set crawl depth (default 2) |
-| `npx tsx src/cli/index.ts assess --dashboard` | Live WebSocket dashboard |
-| `npx tsx src/cli/index.ts assess --dry-run` | Validate config without running agent |
-| `npx tsx src/cli/index.ts assess --learn` | Interactive learning mode (crawl + record) |
-| `npx tsx src/cli/index.ts assess --max-calls 100` | Limit agent tool calls |
-| `npx tsx src/cli/index.ts assess --keep-browser` | Keep browser open after assessment |
-| `npx tsx src/cli/index.ts assess --with-openapi <path>` | Pre-populate from OpenAPI spec |
-| `npx tsx src/cli/index.ts assess --with-har <path>` | Pre-populate from HAR file |
-| `npx tsx src/cli/index.ts assess --with-postman <path>` | Pre-populate from Postman collection |
-| `npx tsx src/cli/index.ts assess --with-src <dir>` | Pre-populate from source code scan |
-| `npx tsx src/cli/index.ts verify -a <json> -t <url>` | Verify findings against new deployment |
-| `npx tsx src/cli/index.ts interact -t <url>` | Live REPL chat loop |
-| `npx vitest run` | Run all 297 tests |
-| `npx tsc --noEmit` | Type check |
-| `npm run build` | Build dist/ with tsup |
+`~/.config/ultimatrix/providers.yaml`:
+```yaml
+provider: openai
+apiKey: sk-...
+model: gpt-4o
+```
+
+## Testing
+
+```bash
+# Run all tests
+npx vitest run
+
+# Type check only
+npx tsc --noEmit
+
+# Build distribution
+npm run build
+```
+
+## Project Structure
+
+```
+src/
+├── cli/               — CLI commands + REPL
+├── core/              — AppModel, BrowserSession, worker-agent (LLM worker threads)
+├── providers/         — 11 LLM provider factories
+├── tools/             — 45 tools (browser, network, exploit, recon, knowledge, etc.)
+├── pipeline/          — AutonomousOrchestrator (strategist loop with parallel dispatch)
+├── explorer/          — Spider crawler + form explorer + SPA route discovery
+├── dashboard/         — WebSocket live dashboard
+├── ingestion/         — OpenAPI/HAR/Postman/source-code parsers
+├── prompts/           — STRATEGIST_PROMPT (concise, auto-stop)
+├── triage/            — Rule-based finding scoring and dedup
+├── oast/              — OAST callback server with /api/check endpoint
+├── browser/           — Playwright session management
+├── engine/            — Report compilation, Mermaid rendering
+└── verification/      — Re-run findings against new deployment
+```
+
+## Notes
+
+- The agent **cannot use browser navigation** during assessment — spider already crawled everything. It only reads the app model and spawns workers.
+- Workers are **crash-isolated** — a worker thread failure doesn't affect the strategist or other workers.
+- The strategist prompt is **concise by design** — no tables, no repetition. Fire workers, check findings, stop when done.

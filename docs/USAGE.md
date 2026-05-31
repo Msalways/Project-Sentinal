@@ -1,6 +1,12 @@
 # Usage Guide
 
-> **⚠️ OUTDATED** — This document covers an earlier version ("sentinel"). See [USAGE.md](../USAGE.md) at the project root for current CLI commands.
+> **⚠️ DEPRECATED** — This file refers to the old "sentinel" architecture (HAR-based pipeline). See [USAGE.md](../USAGE.md) at the project root for current documentation.
+>
+> **Removed in this version:**
+> - `sentinel run`, `sentinel demo`, `sentinel report` commands — replaced by `ultimatrix assess`
+> - HAR-based pipeline — replaced by autonomous spider + strategist
+> - Programmatic API (`createPipeline`, `createOpenAIModel`, etc.) — internal only, not public
+> - Manual test generation — replaced by auto-generated Playwright tests
 
 This guide covers practical usage of Ultimatrix for security testing.
 
