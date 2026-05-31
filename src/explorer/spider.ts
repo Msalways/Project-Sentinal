@@ -1,6 +1,12 @@
+import type { Page } from 'playwright';
 import type { BrowserSessionManager, TraceEntry, MacroStep } from '../core/browser-session';
-import { takeSnapshot } from './dom-observer';
+import { takeSnapshot, isSamePage } from './dom-observer';
 import type { DOMSnapshot } from './dom-observer';
+
+export interface AuthConfig {
+  username: string;
+  password: string;
+}
 
 export interface RouteNode {
   path: string;
@@ -42,7 +48,7 @@ export class SpiderCrawler {
     this.sessionId = sessionId;
   }
 
-  async crawl(targetUrl: string, maxDepth = 3): Promise<CrawlResult> {
+  async crawl(targetUrl: string, maxDepth = 3, authConfig?: AuthConfig): Promise<CrawlResult> {
     const startTime = Date.now();
     const baseUrl = new URL(targetUrl).origin;
     const visited = new Set<string>();
@@ -65,7 +71,7 @@ export class SpiderCrawler {
       visited.add(url);
 
       try {
-        const finalUrl = await this.manager.navigate(this.sessionId, url);
+        const finalUrl = await this.manager.navigate(this.sessionId, url, { relaxed: true });
         const page = await this.manager.getOrCreate(this.sessionId);
 
         // Take full DOM snapshot — replaces manual form counting + link extraction
@@ -156,6 +162,34 @@ export class SpiderCrawler {
             queue.push({ url: link, depth: depth + 1 });
           }
         }
+
+        // Phase 2A: Dismiss dialogs and overlays (cookie banners, modals, popups)
+        if (snapshot.dialogs.length > 0 || snapshot.overlays.length > 0) {
+          await this.dismissOverlays(page, snapshot, snapshots);
+        }
+
+        // Phase 2B: Click interactive elements (buttons, toggles, tabs) to reveal hidden content
+        if (snapshot.interactive.length > 0) {
+          await this.clickInteractiveElements(page, snapshot, finalUrl, visited, queue, depth, snapshots, maxDepth);
+        }
+
+        // Phase 2C: Explore forms — fill, submit, capture result pages
+        if (snapshot.forms.length > 0) {
+          await this.exploreFormsOnPage(page, snapshot.forms, finalUrl, visited, queue, depth, snapshots, maxDepth);
+        }
+
+        // Phase 3: Extract SPA hash routes from links and enqueue them
+        const spaRoutes = this.extractHashRoutes(links, finalUrl, baseUrl);
+        for (const route of spaRoutes) {
+          if (!visited.has(route) && depth + 1 <= maxDepth) {
+            queue.push({ url: route, depth: depth + 1 });
+          }
+        }
+
+        // Phase 4: Detect auth forms and attempt login (only with configured credentials)
+        if (snapshot.forms.length > 0 && this.isAuthForm(snapshot.forms) && authConfig) {
+          await this.attemptAuthFlow(page, snapshot, finalUrl, visited, queue, depth, snapshots, maxDepth, authConfig);
+        }
       } catch (err) {
         errors.push({ url, error: String(err) });
       }
@@ -231,6 +265,366 @@ export class SpiderCrawler {
       }
     }
     return [...new Set(resolved)];
+  }
+
+  private guessFieldValue(field: { name: string; type: string; placeholder: string; required: boolean }, domain: string): string | null {
+    const name = field.name.toLowerCase();
+    const type = field.type.toLowerCase();
+    const placeholder = field.placeholder.toLowerCase();
+
+    if (['hidden', 'file', 'submit', 'button', 'image', 'reset'].includes(type)) return null;
+    if (type === 'date') return new Date().toISOString().slice(0, 10);
+    if (type === 'datetime-local') return new Date().toISOString().slice(0, 16);
+    if (['number', 'range'].includes(type)) return '1';
+    if (type === 'email' || name.includes('email') || placeholder.includes('email')) return `test@${domain}`;
+    if (type === 'password' || name.includes('password') || placeholder.includes('password'))
+      return `T${Math.random().toString(36).slice(2, 6)}${Math.random().toString(36).slice(2, 6)}!`;
+    if (['tel', 'phone'].includes(type) || name.includes('phone') || name.includes('tel') || placeholder.includes('phone'))
+      return `+1${String(Date.now()).slice(-10)}`;
+    if (type === 'url' || name.includes('url') || name.includes('website') || placeholder.includes('url'))
+      return `https://${domain}/`;
+    if (type === 'search' || name === 'q' || name === 's' || name === 'search' || placeholder.includes('search')) return 'test';
+    if (name.includes('name') || placeholder.includes('name') || placeholder.includes('full name')) return 'tester';
+    if (name.includes('user') || name.includes('login') || placeholder.includes('username'))
+      return `user_${Math.random().toString(36).slice(2, 8)}`;
+    if (name.includes('comment') || name.includes('message') || placeholder.includes('comment') || placeholder.includes('message'))
+      return `test ${domain} security scan`;
+    if (type === 'textarea') return `test content for ${domain}`;
+    if (type === 'color') return '#cc0000';
+    if (type === 'month') return `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    if (type === 'week') return `${new Date().getFullYear()}-W${String(Math.ceil((new Date().getTime() - new Date(new Date().getFullYear(), 0, 1).getTime()) / 604800000)).padStart(2, '0')}`;
+    if (type === 'time') return `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
+
+    return `${domain}_test`;
+  }
+
+  private async exploreFormsOnPage(
+    page: Page,
+    forms: DOMSnapshot['forms'],
+    currentUrl: string,
+    visited: Set<string>,
+    queue: Array<{ url: string; depth: number }>,
+    depth: number,
+    snapshots: DOMSnapshot[],
+    maxDepth: number,
+  ): Promise<void> {
+    const baseUrl = new URL(currentUrl).origin;
+    const domain = new URL(currentUrl).hostname;
+
+    for (const form of forms) {
+      if (form.fields.length === 0) continue;
+
+      let absAction: string;
+      try {
+        absAction = new URL(form.action || '', currentUrl).href;
+      } catch {
+        continue;
+      }
+      if (visited.has(absAction) || STATIC_EXT.test(absAction)) continue;
+      if (SKIP_PREFIXES.some((p) => absAction.startsWith(p))) continue;
+
+      const formSelector = form.selector;
+
+      try {
+        // Fill text-like fields
+        for (const field of form.fields) {
+          const value = this.guessFieldValue(field, domain);
+          if (value === null) continue;
+
+          const fType = field.type.toLowerCase();
+          if (fType === 'checkbox' || fType === 'radio') {
+            await page.check(`${formSelector} [name="${field.name}"]`).catch(() => {});
+            continue;
+          }
+          if (fType === 'select-one' || fType === 'select-multiple') {
+            const opts = await page.$$eval(`${formSelector} [name="${field.name}"] option`, (els) =>
+              els.map((o) => (o as HTMLOptionElement).value).filter(Boolean),
+            );
+            if (opts.length > 0) {
+              await page.selectOption(`${formSelector} [name="${field.name}"]`, opts[0]);
+            }
+            continue;
+          }
+
+          await this.manager.fill(this.sessionId, `${formSelector} [name="${field.name}"]`, value);
+        }
+
+        // Find submit button
+        const submitSelector = `${formSelector} button[type="submit"], ${formSelector} input[type="submit"], ${formSelector} button:not([type])`;
+        const hasSubmitBtn = await page.$(submitSelector);
+
+        // Submit — race navigation vs timeout
+        let navigated = false;
+        let newUrl = currentUrl;
+
+        try {
+          await Promise.all([
+            page.waitForURL((u) => u.href !== currentUrl, { timeout: 8000 }),
+            hasSubmitBtn
+              ? this.manager.click(this.sessionId, submitSelector)
+              : page.keyboard.press('Enter'),
+          ]);
+          navigated = true;
+          newUrl = page.url();
+        } catch {
+          await page.waitForTimeout(2000);
+          newUrl = page.url();
+        }
+
+        // Process result page
+        if (navigated && newUrl !== currentUrl) {
+          if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
+            const resultSnapshot = await takeSnapshot(page);
+            snapshots.push(resultSnapshot);
+
+            const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
+              Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+                href: (a as HTMLAnchorElement).getAttribute('href') || '',
+                text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 60),
+              })),
+            );
+            const resolved = this.resolveLinks(links, newUrl, baseUrl);
+            visited.add(newUrl);
+            for (const link of resolved) {
+              if (!visited.has(link) && depth + 1 <= maxDepth) {
+                queue.push({ url: link, depth: depth + 1 });
+              }
+            }
+          }
+        } else {
+          const afterSnapshot = await takeSnapshot(page);
+          if (snapshots.length > 0 && !isSamePage(snapshots[snapshots.length - 1], afterSnapshot)) {
+            snapshots.push(afterSnapshot);
+
+            const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
+              Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+                href: (a as HTMLAnchorElement).getAttribute('href') || '',
+                text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 60),
+              })),
+            );
+            const resolved = this.resolveLinks(links, newUrl, baseUrl);
+            for (const link of resolved) {
+              if (!visited.has(link) && depth + 1 <= maxDepth) {
+                queue.push({ url: link, depth: depth + 1 });
+              }
+            }
+          }
+        }
+
+        // Navigate back to original page if needed
+        if (page.url() !== currentUrl) {
+          await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+        }
+      } catch {
+        try {
+          if (page.url() !== currentUrl) {
+            await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+          }
+        } catch {}
+      }
+    }
+  }
+
+  private async dismissOverlays(
+    page: Page,
+    snapshot: DOMSnapshot,
+    snapshots: DOMSnapshot[],
+  ): Promise<void> {
+    for (const dialog of snapshot.dialogs) {
+      if (!dialog.isVisible) continue;
+      try {
+        const btn = await page.$(
+          `${dialog.selector} button, ${dialog.selector} a[href], ${dialog.selector} [role="button"]`,
+        );
+        if (btn) {
+          await btn.click().catch(() => {});
+          await page.waitForTimeout(1000);
+          const after = await takeSnapshot(page);
+          if (!isSamePage(snapshot, after)) snapshots.push(after);
+        }
+      } catch {}
+    }
+    for (const overlay of snapshot.overlays) {
+      try {
+        const btn = await page.$(
+          `${overlay.selector} button, ${overlay.selector} a, ${overlay.selector} [class*="close"], ${overlay.selector} [class*="dismiss"]`,
+        );
+        if (btn) {
+          await btn.click().catch(() => {});
+          await page.waitForTimeout(1000);
+          const after = await takeSnapshot(page);
+          if (!isSamePage(snapshot, after)) snapshots.push(after);
+        }
+      } catch {}
+    }
+  }
+
+  private async clickInteractiveElements(
+    page: Page,
+    snapshot: DOMSnapshot,
+    currentUrl: string,
+    visited: Set<string>,
+    queue: Array<{ url: string; depth: number }>,
+    depth: number,
+    snapshots: DOMSnapshot[],
+    maxDepth: number,
+  ): Promise<void> {
+    const DANGER_WORDS = /logout|sign.?out|delete|remove|destroy|terminate|cancel|revoke|deactivate/i;
+    const baseUrl = new URL(currentUrl).origin;
+
+    for (const el of snapshot.interactive) {
+      if (DANGER_WORDS.test(el.text)) continue;
+      if (el.tag === 'a' && el.href) continue;
+
+      try {
+        const beforeUrl = page.url();
+        const btn = await page.$(el.selector);
+        if (!btn) continue;
+
+        await btn.click();
+        let navigated = false;
+        try {
+          await page.waitForURL((u) => u.href !== beforeUrl, { timeout: 5000 });
+          navigated = true;
+        } catch {
+          await page.waitForTimeout(1500);
+        }
+
+        const newUrl = page.url();
+        if (navigated && newUrl !== currentUrl) {
+          if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
+            const resultSnapshot = await takeSnapshot(page);
+            snapshots.push(resultSnapshot);
+            const links = await page.evaluate(() =>
+              Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+                href: (a as HTMLAnchorElement).getAttribute('href') || '',
+                text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 60),
+              })),
+            );
+            const resolved = this.resolveLinks(links, newUrl, baseUrl);
+            visited.add(newUrl);
+            for (const link of resolved) {
+              if (!visited.has(link) && depth + 1 <= maxDepth) queue.push({ url: link, depth: depth + 1 });
+            }
+          }
+        } else {
+          const after = await takeSnapshot(page);
+          if (snapshots.length > 0 && !isSamePage(snapshots[snapshots.length - 1], after)) {
+            snapshots.push(after);
+            const links = await page.evaluate(() =>
+              Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+                href: (a as HTMLAnchorElement).getAttribute('href') || '',
+                text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 60),
+              })),
+            );
+            const resolved = this.resolveLinks(links, newUrl, baseUrl);
+            for (const link of resolved) {
+              if (!visited.has(link) && depth + 1 <= maxDepth) queue.push({ url: link, depth: depth + 1 });
+            }
+          }
+        }
+
+        if (page.url() !== currentUrl) {
+          await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+        }
+      } catch {}
+    }
+  }
+
+  private extractHashRoutes(
+    links: Array<{ href: string; text: string }>,
+    currentUrl: string,
+    baseOrigin: string,
+  ): string[] {
+    const routes: string[] = [];
+    for (const { href } of links) {
+      if (!href.startsWith('#') && !href.startsWith('/#')) continue;
+      try {
+        const abs = new URL(href, currentUrl);
+        if (abs.origin !== baseOrigin) continue;
+        const hash = abs.hash;
+        if (!hash || hash === '#' || hash === '#/') continue;
+        if (STATIC_EXT.test(hash)) continue;
+        routes.push(abs.href);
+      } catch {}
+    }
+    return [...new Set(routes)];
+  }
+
+  private isAuthForm(forms: DOMSnapshot['forms']): boolean {
+    return forms.some((f) => {
+      const names = f.fields.map((fd) => fd.name.toLowerCase());
+      const types = f.fields.map((fd) => fd.type.toLowerCase());
+      const hasPassword = types.includes('password');
+      const hasUsername = names.some((n) => /user|login|email/.test(n)) || types.includes('email');
+      return hasPassword && hasUsername;
+    });
+  }
+
+  private async attemptAuthFlow(
+    page: Page,
+    snapshot: DOMSnapshot,
+    currentUrl: string,
+    visited: Set<string>,
+    queue: Array<{ url: string; depth: number }>,
+    depth: number,
+    snapshots: DOMSnapshot[],
+    maxDepth: number,
+    authConfig: AuthConfig,
+  ): Promise<void> {
+    const authForm = snapshot.forms.find((f) => {
+      const names = f.fields.map((fd) => fd.name.toLowerCase());
+      const types = f.fields.map((fd) => fd.type.toLowerCase());
+      return types.includes('password') && (names.some((n) => /user|login|email/.test(n)) || types.includes('email'));
+    });
+    if (!authForm) return;
+
+    const formSelector = authForm.selector;
+    try {
+      for (const field of authForm.fields) {
+        const name = field.name.toLowerCase();
+        const type = field.type.toLowerCase();
+        if (type === 'password') {
+          await this.manager.fill(this.sessionId, `${formSelector} [name="${field.name}"]`, authConfig.password);
+        } else if (type === 'email' || name.includes('email') || name.includes('user') || name.includes('login')) {
+          await this.manager.fill(this.sessionId, `${formSelector} [name="${field.name}"]`, authConfig.username);
+        }
+      }
+
+      const submitSel = `${formSelector} button[type="submit"], ${formSelector} input[type="submit"], ${formSelector} button:not([type])`;
+      const hasSubmit = await page.$(submitSel);
+
+      let navigated = false;
+      try {
+        await Promise.all([
+          page.waitForURL((u) => u.href !== currentUrl, { timeout: 8000 }),
+          hasSubmit ? this.manager.click(this.sessionId, submitSel) : page.keyboard.press('Enter'),
+        ]);
+        navigated = true;
+      } catch {
+        await page.waitForTimeout(2000);
+      }
+
+      if (!navigated) return;
+
+      const newUrl = page.url();
+      if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
+        const resultSnapshot = await takeSnapshot(page);
+        snapshots.push(resultSnapshot);
+        visited.add(newUrl);
+        const baseUrl = new URL(currentUrl).origin;
+        const links = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+            href: (a as HTMLAnchorElement).getAttribute('href') || '',
+            text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 60),
+          })),
+        );
+        const resolved = this.resolveLinks(links, newUrl, baseUrl);
+        for (const link of resolved) {
+          if (!visited.has(link) && depth + 1 <= maxDepth) queue.push({ url: link, depth: depth + 1 });
+        }
+      }
+    } catch {}
   }
 
   async close(): Promise<string> {

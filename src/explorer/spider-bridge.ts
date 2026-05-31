@@ -1,9 +1,58 @@
-import type { AppModel, WorkflowNode, WorkflowEdge, AppModelForm } from '../core/app-model';
+import type { AppModel, WorkflowNode, WorkflowEdge, AppModelForm, AppModelEndpoint } from '../core/app-model';
 import type { CrawlResult } from './spider';
+import type { TraceEntry } from '../core/browser-session';
+
+const STATIC_EXT = /\.(css|js|woff2?|png|svg|ico|map|jpg|jpeg|gif|webp|ttf|eot|pdf)$/i;
+const API_CONTENT_TYPES = /json|xml|grpc|protobuf|graphql|form-data|x-www-form-urlencoded/i;
 
 export interface SpiderBridgeResult {
   model: Partial<AppModel>;
   privateAppHint: string;
+}
+
+function mineTraceForEndpoints(trace: TraceEntry[]): AppModelEndpoint[] {
+  const seen = new Set<string>();
+  const endpoints: AppModelEndpoint[] = [];
+
+  for (const entry of trace) {
+    if (entry.type !== 'xhr' && entry.type !== 'fetch') continue;
+
+    let url: URL;
+    try {
+      url = new URL(entry.url);
+    } catch {
+      continue;
+    }
+
+    const pathname = url.pathname;
+    if (STATIC_EXT.test(pathname)) continue;
+
+    const CHALLENGE_PATHS = /^\/(cdn-cgi|__cf|__static)\//;
+    if (CHALLENGE_PATHS.test(pathname)) continue;
+
+    const contentType = (entry.responseHeaders?.['content-type'] || '').toLowerCase();
+
+    const params: Array<{ name: string; type: string; required: boolean }> = [];
+    url.searchParams.forEach((_, key) => {
+      params.push({ name: key, type: 'query', required: false });
+    });
+
+    const uniqueKey = `${entry.method}:${pathname}`;
+    if (seen.has(uniqueKey)) continue;
+    seen.add(uniqueKey);
+
+    endpoints.push({
+      path: pathname,
+      method: entry.method || 'GET',
+      params,
+      requiresAuth: false,
+      responseStatus: entry.status,
+      contentType,
+      bodyPreview: entry.requestBody || '',
+    });
+  }
+
+  return endpoints;
 }
 
 export function spiderResultToAppModel(crawl: CrawlResult, target: string): SpiderBridgeResult {
@@ -87,6 +136,8 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
     (k) => /session|token|auth|sid|jwt|connect\.sid|phpsessid|jsessionid/i.test(k)
   );
 
+  const minedEndpoints = mineTraceForEndpoints(crawl.trace || []);
+
   return {
     model: {
       target,
@@ -100,7 +151,7 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
         sessions: {},
       },
       workflow: { nodes, edges },
-      endpoints: [],
+      endpoints: minedEndpoints,
       forms,
       scripts: [],
       cookies: crawl.cookies,
@@ -112,14 +163,11 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
       recordedSessions: {
         'spider-auto': crawl.recording || [],
       },
-      hypotheses: hasSessionCookie
-        ? ['Session cookie detected — probe authenticated endpoints']
-        : ['No session found — target may be public or behind login'],
+      hypotheses: [],
       nextSteps: [
         'Read workflow graph',
         'Probe auth boundaries',
-        'Classify parameters',
-        'Test hypotheses',
+        'Test discovered endpoints',
       ],
       visitedUrls: crawl.visitedUrls || [],
       oastCallbacks: [],
