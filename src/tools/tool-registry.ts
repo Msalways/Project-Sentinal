@@ -363,73 +363,6 @@ toolRegistry.register({
   }, { name: 'graphql_introspect', description: 'Query GraphQL introspection', schema: GraphqlIntrospectSchema }),
 });
 
-// ── Exploit Testing Tools ──
-
-const SqlInjectSchema = z.object({
-  url: z.string().describe('Target URL to test'),
-  paramName: z.string().describe('Parameter name to inject into'),
-  payload: z.string().describe('SQL injection payload crafted by the LLM based on previous response analysis'),
-  method: z.string().optional().default('GET').describe('HTTP method'),
-  technique: z.string().optional().describe('Injection technique (e.g. "boolean", "union", "time-based", "error-based", "stacked")'),
-});
-
-toolRegistry.register({
-  name: 'sql_inject',
-  category: 'exploit',
-  description: 'Inject a crafted SQL payload into a parameter and return the full response, timing, and any database error messages for the LLM to analyze and refine the next payload',
-  tags: ['exploit', 'sqli', 'injection'],
-  factory: () => tool(async (input) => {
-    const { url, paramName, payload, method, technique } = SqlInjectSchema.parse(u(input));
-    const start = Date.now();
-    try {
-      const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${paramName}=${encodeURIComponent(payload)}` : url;
-      const res = await fetch(testUrl, {
-        method,
-        headers: method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {},
-        body: method === 'POST' ? `${paramName}=${encodeURIComponent(payload)}` : undefined,
-      });
-      const body = await res.text();
-      const elapsed = Date.now() - start;
-      return JSON.stringify({ status: res.status, time: elapsed, bodyLength: body.length, bodyPreview: body.slice(0, 2000), technique: technique || 'unknown', paramName });
-    } catch (error) {
-      return JSON.stringify({ status: 0, time: Date.now() - start, error: error instanceof Error ? error.message : String(error), technique: technique || 'unknown', paramName });
-    }
-  }, { name: 'sql_inject', description: 'Inject a SQL payload into a parameter', schema: SqlInjectSchema }),
-});
-
-const XssInjectSchema = z.object({
-  url: z.string().describe('Target URL to test'),
-  paramName: z.string().describe('Parameter name to inject into'),
-  payload: z.string().describe('XSS payload crafted by the LLM. Adapt the payload based on reflection context — attribute, script, comment, or URL'),
-  method: z.string().optional().default('GET').describe('HTTP method'),
-  context: z.string().optional().describe('Reflection context: "attribute", "script", "comment", "url", "html", "unknown"'),
-});
-
-toolRegistry.register({
-  name: 'xss_inject',
-  category: 'exploit',
-  description: 'Inject a crafted XSS payload into a parameter and return the response with reflection analysis — whether and how the payload was reflected, encoded, or blocked',
-  tags: ['exploit', 'xss', 'injection'],
-  factory: () => tool(async (input) => {
-    const { url, paramName, payload, method, context } = XssInjectSchema.parse(u(input));
-    try {
-      const testUrl = method === 'GET' ? `${url}${url.includes('?') ? '&' : '?'}${paramName}=${encodeURIComponent(payload)}` : url;
-      const res = await fetch(testUrl, { method, body: method === 'POST' ? `${paramName}=${encodeURIComponent(payload)}` : undefined });
-      const body = await res.text();
-      const reflected = body.includes(payload);
-      const encoded = body.includes(encodeURIComponent(payload).replace(/%/g, '%25')) || body.includes('&lt;script');
-      const contextHints = [];
-      if (body.includes(`="${payload}"`)) contextHints.push('reflected-in-attribute');
-      if (body.includes(`>${payload}<`)) contextHints.push('reflected-in-html');
-      if (body.includes(`//${payload}`)) contextHints.push('reflected-in-script');
-      if (body.includes(`<!--${payload}`)) contextHints.push('reflected-in-comment');
-      return JSON.stringify({ status: res.status, reflected, encoded, contextHints, context, bodyLength: body.length, bodyPreview: body.slice(0, 2000), paramName });
-    } catch (error) {
-      return JSON.stringify({ status: 0, error: error instanceof Error ? error.message : String(error), context, paramName });
-    }
-  }, { name: 'xss_inject', description: 'Inject an XSS payload into a parameter', schema: XssInjectSchema }),
-});
-
 // ── Reconnaissance Tools ──
 
 const SubdomainEnumSchema = z.object({ domain: z.string().describe('Domain name to enumerate subdomains for (e.g. example.com)') });
@@ -922,6 +855,169 @@ toolRegistry.register({
   description: 'Clear cookies, localStorage, and sessionStorage without closing the browser.',
   tags: ['browser', 'session', 'auth'],
   factory: () => createResetSessionTool(),
+});
+
+// ── Strategist Tools (read_attack_plan, spawn_worker, mark_hypothesis) ──
+
+toolRegistry.register({
+  name: 'read_attack_plan',
+  category: 'utility',
+  description: 'Read the current attack plan — returns structured hypotheses with type, technique, endpoint, param, method, status',
+  tags: ['strategist', 'plan'],
+  factory: () => tool(async () => {
+    const path = getAppModelPath();
+    const model = readAppModel(path);
+    const hypotheses = Array.isArray(model.hypotheses) ? model.hypotheses : [];
+    return JSON.stringify({ total: hypotheses.length, hypotheses });
+  }, {
+    name: 'read_attack_plan',
+    description: 'Read the current attack plan',
+    schema: z.object({}),
+  }),
+});
+
+toolRegistry.register({
+  name: 'spawn_worker',
+  category: 'utility',
+  description: 'Spawn a worker thread to test a specific endpoint/param with a technique. The worker uses an LLM to generate payloads, send requests, and analyze responses.',
+  tags: ['strategist', 'worker'],
+  factory: () => tool(async (input) => {
+    const { endpoint, param, method, technique } = z.object({
+      endpoint: z.string().describe('Target endpoint URL'),
+      param: z.string().nullable().optional().describe('Parameter to test'),
+      method: z.string().optional().default('GET').describe('HTTP method'),
+      technique: z.string().describe('Technique: sqli, xss, ssrf, xxe, cmd, path, ssti, open-redirect, idor, race'),
+    }).parse(input);
+    const STATIC_EXT = /\.(css|js|woff2?|png|svg|ico|map|jpg|jpeg|gif|webp|ttf|eot|pdf)$/i;
+    if (STATIC_EXT.test(endpoint)) {
+      return JSON.stringify({ hypothesisId: '', vulnerable: false, summary: `Rejected: endpoint is a static asset (${endpoint})`, error: 'static_asset' });
+    }
+    const { Worker } = await import('worker_threads');
+    const pth = await import('path');
+    const modelPath = getAppModelPath();
+    const model = readAppModel(modelPath);
+    const id = `hyp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const hypothesis: Record<string, unknown> = {
+      type: param ? 'param' : 'param',
+      id, endpoint, param: param || '', method, technique,
+      priority: 5, status: 'running' as const, source: 'strategist' as const, createdAt: Date.now(),
+    };
+    const existing = Array.isArray(model.hypotheses) ? [...model.hypotheses] : [];
+    existing.push(hypothesis);
+    updateAppModelSection(modelPath, 'hypotheses', existing, true);
+
+    const isDev = pth.extname(__filename) === '.ts';
+    const workerPath = pth.resolve(pth.join(__dirname, '..', 'core', isDev ? 'worker-agent.ts' : 'worker-agent.js'));
+    const { getLlmConfig } = await import('../core/app-model-path');
+    const llmConfig = getLlmConfig();
+
+    let oastBaseUrl: string | undefined;
+    try {
+      const { getOastServer } = await import('../oast');
+      const srv = getOastServer();
+      if (srv.isRunning()) {
+        oastBaseUrl = `http://localhost:${srv.getPort()}`;
+      }
+    } catch { /* best effort */ }
+
+    return new Promise((resolve) => {
+      const worker = new Worker(workerPath, {
+        workerData: { hypothesis, llmConfig, appModelPath: modelPath, oastBaseUrl },
+        execArgv: isDev ? ['--import', 'tsx'] : [],
+      });
+      // Fire-and-forget: worker findings persisted to app model asynchronously
+      worker.on('message', (result) => {
+        if (result.attempts?.length > 0) {
+          updateAppModelSection(modelPath, 'workerActions', result.attempts);
+        }
+        if (result.vulnerable && result.confidence >= 0.5) {
+          const cur = readAppModel(modelPath);
+          const finding = {
+            type: result.technique?.toUpperCase() || 'UNKNOWN',
+            endpoint,
+            param: param || '',
+            evidence: (result.evidence || []).map((e: string) => ({ text: e, type: 'reflection' })),
+            confidence: result.confidence >= 0.8 ? 'high' : result.confidence >= 0.5 ? 'medium' : 'low',
+            confirmed: true,
+            severity: result.confidence >= 0.8 ? 'high' : result.confidence >= 0.5 ? 'medium' : 'low',
+          };
+          const existing = Array.isArray(cur.findings) ? [...cur.findings] : [];
+          existing.push(finding);
+          updateAppModelSection(modelPath, 'findings', existing, true);
+        }
+      });
+      worker.on('error', (err) => {
+        process.stderr.write(`[spawn_worker] Worker error: ${err.message}\n`);
+      });
+      worker.on('exit', (code) => {
+        if (code !== 0) process.stderr.write(`[spawn_worker] Worker exited with code ${code}\n`);
+      });
+      resolve(JSON.stringify({
+        status: 'started',
+        workerId: hypothesis.id,
+        technique,
+        endpoint,
+        param: param || '',
+        summary: `Worker launched for ${technique} on ${endpoint}${param ? '?'+param : ''}`,
+      }));
+    });
+  }, {
+    name: 'spawn_worker',
+    description: 'Spawn a worker thread to test an endpoint/param with a technique',
+    schema: z.object({
+      endpoint: z.string().describe('Target endpoint URL'),
+      param: z.string().nullable().optional().describe('Parameter to test'),
+      method: z.string().optional().default('GET').describe('HTTP method'),
+      technique: z.string().describe('Technique: sqli, xss, ssrf, xxe, cmd, path, ssti, open-redirect, idor, race'),
+    }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'mark_hypothesis',
+  category: 'utility',
+  description: 'Mark a hypothesis as done or error in the attack plan',
+  tags: ['strategist', 'plan'],
+  factory: () => tool(async (input) => {
+    const { hypothesisId, status } = z.object({
+      hypothesisId: z.string().describe('The hypothesis ID to update'),
+      status: z.enum(['done', 'error']).describe('New status'),
+    }).parse(input);
+    const path = getAppModelPath();
+    const { updateAppModelSection, readAppModel } = await import('../core/app-model');
+    const model = readAppModel(path);
+    const hypotheses = Array.isArray(model.hypotheses) ? [...model.hypotheses] : [];
+    const idx = hypotheses.findIndex((h: any) => h.id === hypothesisId);
+    if (idx >= 0) {
+      const obj = hypotheses[idx] as Record<string, unknown>;
+      if (obj && typeof obj === 'object') {
+        obj.status = status;
+        hypotheses[idx] = obj;
+      }
+    }
+    updateAppModelSection(path, 'hypotheses', hypotheses, true);
+    return JSON.stringify({ hypothesisId, status, updated: true });
+  }, {
+    name: 'mark_hypothesis',
+    description: 'Mark a hypothesis as done or error',
+    schema: z.object({
+      hypothesisId: z.string().describe('The hypothesis ID to update'),
+      status: z.enum(['done', 'error']).describe('New status'),
+    }),
+  }),
+});
+
+// ── Ask User Tool ──
+
+toolRegistry.register({
+  name: 'ask_user',
+  category: 'utility',
+  description: 'Ask the user a question and wait for their response. Use when you need credentials, permission, clarification, or want to explain findings.',
+  tags: ['utility', 'communication'],
+  factory: () => {
+    const { createAskUserTool } = require('./ask-user-tool');
+    return createAskUserTool();
+  },
 });
 
 // ── Helpers ──
