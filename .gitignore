@@ -18,3 +18,9 @@ JUDGE_TESTING.md
 demo-output/
 flow-output/
 output/
+
+output-test*/
+test-output/
+test-validate/
+test-server/
+*.tsbuildinfo
